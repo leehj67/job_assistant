@@ -1,0 +1,4 @@
+# 선택: 이미지 OCR (한·영) — 용량이 큽니다.
+# pip install -r requirements-ocr.txt
+easyocr==1.7.2
+opencv-python-headless==4.10.0.84
