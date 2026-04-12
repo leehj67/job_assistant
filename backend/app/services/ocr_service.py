@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 
 import httpx
 from PIL import Image
@@ -15,6 +16,15 @@ logger = logging.getLogger(__name__)
 _reader_singleton: object | None = None  # None=미시도, False=실패, Reader=성공
 
 
+def _ocr_init_transient_error(exc: BaseException) -> bool:
+    """Windows에서 모델 temp.zip 잠금(WinError 32) 등 일시적 실패."""
+    win = getattr(exc, "winerror", None)
+    if win == 32:
+        return True
+    msg = str(exc).lower()
+    return "being used by another process" in msg or "temp.zip" in msg
+
+
 def _get_reader():
     global _reader_singleton
     if _reader_singleton is not None:
@@ -24,13 +34,25 @@ def _get_reader():
         return None
     try:
         import easyocr  # noqa: WPS433
-
-        _reader_singleton = easyocr.Reader(["ko", "en"], gpu=False, verbose=False)
-        return _reader_singleton
-    except Exception as e:
-        logger.warning("EasyOCR 초기화 실패(OCR 비활성): %s", e)
+    except ModuleNotFoundError as e:
+        logger.warning("easyocr 미설치(OCR 비활성): %s", e)
         _reader_singleton = False
         return None
+
+    for attempt in range(3):
+        try:
+            _reader_singleton = easyocr.Reader(["ko", "en"], gpu=False, verbose=False)
+            return _reader_singleton
+        except Exception as e:
+            if _ocr_init_transient_error(e) and attempt < 2:
+                logger.warning(
+                    "EasyOCR 초기화 잠금/경합(재시도 %s/3): %s", attempt + 1, e
+                )
+                time.sleep(1.5)
+                continue
+            logger.warning("EasyOCR 초기화 실패(OCR 비활성): %s", e)
+            _reader_singleton = False
+            return None
 
 
 def ocr_available() -> bool:

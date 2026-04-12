@@ -53,6 +53,7 @@ class CollectResult(BaseModel):
     job_ids: list[int]
     errors: list[str]
     job_links: list[CollectedJobLink] = Field(default_factory=list)
+    cancelled: bool = Field(False, description="스트림 수집 중 사용자 취소·연결 종료로 조기 종료")
 
 
 class SkillStatOut(BaseModel):

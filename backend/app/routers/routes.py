@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import queue
+import threading
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models import (
     ApplicantProfile,
     DemandSupplySummary,
@@ -42,7 +47,7 @@ from app.schemas import (
     TrendSeriesOut,
     TrendPointOut,
 )
-from app.services.collection import collect_by_keywords
+from app.services.collection import collect_by_keywords, generate_collect_events
 from app.services.job_links import resolve_job_listing_url
 from app.services.application_draft import build_application_draft
 from app.services.body_keyword_analysis import analyze_job_body_keywords
@@ -567,23 +572,7 @@ def admin_recompute(category: str | None = None, db: Session = Depends(get_db)):
     return {"ok": True, "categories": cats}
 
 
-@router.post("/collect", response_model=CollectResult)
-def collect_jobs(body: CollectRequest, db: Session = Depends(get_db)):
-    if body.category not in CATEGORY_LABEL:
-        raise HTTPException(400, f"알 수 없는 category: {body.category}")
-    if not body.sources:
-        raise HTTPException(400, "sources가 비었습니다.")
-    result = collect_by_keywords(
-        db,
-        keywords=body.keywords,
-        category=body.category,
-        sources=body.sources,
-        max_pages=body.max_pages,
-        fetch_detail=body.fetch_detail,
-        use_ocr=body.use_ocr,
-    )
-    if "error" in result:
-        raise HTTPException(400, result["error"])
+def _collect_result_from_payload(db: Session, result: dict) -> CollectResult:
     job_links: list[CollectedJobLink] = []
     for jid in result["job_ids"]:
         job = db.get(Job, jid)
@@ -604,6 +593,126 @@ def collect_jobs(body: CollectRequest, db: Session = Depends(get_db)):
         job_ids=result["job_ids"],
         errors=result.get("errors", []),
         job_links=job_links,
+        cancelled=bool(result.get("cancelled", False)),
+    )
+
+
+@router.get("/collect/sources-health")
+def collect_sources_health():
+    """사람인·잡코리아 목록 1회 GET·파싱 스모크(저장 없음). 대시보드에서 연결 상태 확인용."""
+    import time as time_mod
+
+    from scrapers.jobkorea_search import fetch_listings as jk_list
+    from scrapers.saramin_search import fetch_listings as sr_list
+
+    out: dict[str, dict] = {}
+    for key, fn in (("saramin", sr_list), ("jobkorea", jk_list)):
+        t0 = time_mod.perf_counter()
+        try:
+            rows = fn("Python", 1)
+            ms = round((time_mod.perf_counter() - t0) * 1000, 1)
+            out[key] = {"ok": True, "listings": len(rows), "ms": ms}
+        except Exception as e:
+            ms = round((time_mod.perf_counter() - t0) * 1000, 1)
+            out[key] = {"ok": False, "listings": 0, "ms": ms, "error": str(e)[:400]}
+    return out
+
+
+@router.post("/collect", response_model=CollectResult)
+def collect_jobs(body: CollectRequest, db: Session = Depends(get_db)):
+    if body.category not in CATEGORY_LABEL:
+        raise HTTPException(400, f"알 수 없는 category: {body.category}")
+    if not body.sources:
+        raise HTTPException(400, "sources가 비었습니다.")
+    result = collect_by_keywords(
+        db,
+        keywords=body.keywords,
+        category=body.category,
+        sources=body.sources,
+        max_pages=body.max_pages,
+        fetch_detail=body.fetch_detail,
+        use_ocr=body.use_ocr,
+    )
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return _collect_result_from_payload(db, result)
+
+
+@router.post("/collect/stream")
+async def collect_jobs_stream(request: Request, body: CollectRequest, db: Session = Depends(get_db)):
+    """NDJSON 스트림으로 진행 이벤트를 보냅니다. 클라이언트가 연결을 끊으면 취소로 간주합니다."""
+    if body.category not in CATEGORY_LABEL:
+        raise HTTPException(400, f"알 수 없는 category: {body.category}")
+    if not body.sources:
+        raise HTTPException(400, "sources가 비었습니다.")
+
+    sync_q: queue.Queue[dict | None] = queue.Queue(maxsize=128)
+    cancel_evt = threading.Event()
+
+    async def watch_disconnect() -> None:
+        try:
+            while not cancel_evt.is_set():
+                if await request.is_disconnected():
+                    cancel_evt.set()
+                    return
+                await asyncio.sleep(0.25)
+        except asyncio.CancelledError:
+            return
+
+    async def byte_stream():
+        # 첫 청크 즉시 전송(클라이언트·프록시가 응답을 열고 스트림을 기다리게 함)
+        yield b'{"type":"progress","phase":"connecting"}\n'
+        watcher = asyncio.create_task(watch_disconnect())
+
+        def producer() -> None:
+            """수집은 전용 OS 스레드 + 별도 DB 세션( asyncio 기본 스레드 풀과 분리 — 풀 고갈 교착 방지 )."""
+            db_worker = SessionLocal()
+            try:
+                for ev in generate_collect_events(
+                    db_worker,
+                    keywords=body.keywords,
+                    category=body.category,
+                    sources=body.sources,
+                    max_pages=body.max_pages,
+                    fetch_detail=body.fetch_detail,
+                    use_ocr=body.use_ocr,
+                    cancel_check=cancel_evt.is_set,
+                    emit=None,
+                ):
+                    sync_q.put(ev)
+            finally:
+                db_worker.close()
+                sync_q.put(None)
+
+        prod_thread = threading.Thread(target=producer, name="collect-stream", daemon=True)
+        prod_thread.start()
+        try:
+            while True:
+                ev = await asyncio.to_thread(sync_q.get)
+                if ev is None:
+                    break
+                if ev.get("type") in ("done", "cancelled") and isinstance(ev.get("payload"), dict):
+                    cr = _collect_result_from_payload(db, ev["payload"])
+                    ev = {**ev, "payload": cr.model_dump()}
+                line = json.dumps(ev, ensure_ascii=False) + "\n"
+                yield line.encode("utf-8")
+        finally:
+            cancel_evt.set()
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+            prod_thread.join(timeout=2.0)
+
+    return StreamingResponse(
+        byte_stream(),
+        media_type="application/x-ndjson; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 

@@ -25,8 +25,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ko">
+    /* 확장(Bitwarden 등)이 body/html에 속성을 넣어 hydration 경고가 날 수 있음 */
+    <html lang="ko" suppressHydrationWarning>
       <body
+        suppressHydrationWarning
         className={`${geistSans.variable} ${geistMono.variable} min-h-screen antialiased`}
       >
         <AppNav />

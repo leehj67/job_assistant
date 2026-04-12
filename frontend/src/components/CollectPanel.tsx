@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  COLLECT_FETCH_TIMEOUT_MS,
+  COLLECT_STREAM_IDLE_MS,
+  getCollectSourcesHealth,
   getCollectSuggestions,
   getLlmStatus,
-  postCollect,
+  postCollectStream,
   type CollectResult,
+  type CollectSourcesHealth,
 } from "@/lib/api";
 import {
   COLLECT_APPLY_EVENT,
@@ -36,10 +38,17 @@ export function CollectPanel() {
   const [result, setResult] = useState<CollectResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [llm, setLlm] = useState<Awaited<ReturnType<typeof getLlmStatus>> | null>(null);
+  const [sourcesHealth, setSourcesHealth] = useState<CollectSourcesHealth | null>(null);
+  const [sourcesHealthLoading, setSourcesHealthLoading] = useState(false);
+  const [sourcesHealthErr, setSourcesHealthErr] = useState<string | null>(null);
   const [collectPrefs, setCollectPrefs] = useState<StoredCollectPrefs | null>(null);
   const [collectSuggestLoading, setCollectSuggestLoading] = useState(false);
+  const [progressPct, setProgressPct] = useState(0);
+  const [progressHint, setProgressHint] = useState("");
+  const [progressLog, setProgressLog] = useState<string[]>([]);
   const collectAbortRef = useRef<AbortController | null>(null);
-  const collectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelKindRef = useRef<"user" | "idle" | null>(null);
 
   const applyCollectPrefs = useCallback((p: StoredCollectPrefs) => {
     setKw(p.keywordsLine);
@@ -68,6 +77,20 @@ export function CollectPanel() {
     setKw((prev) => (prev.trim() ? `${prev.trim()}, ${add}` : add));
   }
 
+  async function runSourcesHealthCheck() {
+    setSourcesHealthLoading(true);
+    setSourcesHealthErr(null);
+    try {
+      const h = await getCollectSourcesHealth();
+      setSourcesHealth(h);
+    } catch (x) {
+      setSourcesHealth(null);
+      setSourcesHealthErr(x instanceof Error ? x.message : "연결 확인 실패");
+    } finally {
+      setSourcesHealthLoading(false);
+    }
+  }
+
   async function loadCollectSuggestionsFromProfile() {
     setCollectSuggestLoading(true);
     setErr(null);
@@ -81,24 +104,29 @@ export function CollectPanel() {
     }
   }
 
-  function clearCollectTimeout() {
-    if (collectTimerRef.current) {
-      clearTimeout(collectTimerRef.current);
-      collectTimerRef.current = null;
+  function clearIdleTimer() {
+    if (idleTimerRef.current) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
     }
   }
 
   function cancelCollect() {
+    cancelKindRef.current = "user";
     collectAbortRef.current?.abort();
   }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     collectAbortRef.current?.abort();
-    clearCollectTimeout();
+    clearIdleTimer();
     setLoading(true);
     setErr(null);
     setResult(null);
+    setProgressPct(0);
+    setProgressHint("");
+    setProgressLog([]);
+    cancelKindRef.current = null;
     const keywords = kw
       .split(/[,，\n]+/)
       .map((s) => s.trim())
@@ -108,11 +136,22 @@ export function CollectPanel() {
     if (jobkorea) sources.push("jobkorea");
     const ac = new AbortController();
     collectAbortRef.current = ac;
-    collectTimerRef.current = setTimeout(() => {
-      ac.abort();
-    }, COLLECT_FETCH_TIMEOUT_MS);
+
+    const bumpIdle = () => {
+      clearIdleTimer();
+      idleTimerRef.current = setTimeout(() => {
+        cancelKindRef.current = "idle";
+        ac.abort();
+      }, COLLECT_STREAM_IDLE_MS);
+    };
+    bumpIdle();
+
+    const pushLog = (line: string) => {
+      setProgressLog((prev) => [...prev, line].slice(-14));
+    };
+
     try {
-      const r = await postCollect(
+      const r = await postCollectStream(
         {
           keywords,
           category,
@@ -121,7 +160,61 @@ export function CollectPanel() {
           fetch_detail: detailOcr,
           use_ocr: detailOcr,
         },
-        ac.signal
+        {
+          signal: ac.signal,
+          onEvent: (raw) => {
+            bumpIdle();
+            if (!raw || typeof raw !== "object") return;
+            const ev = raw as Record<string, unknown>;
+            const typ = ev.type;
+            if (typ === "start") {
+              const tot = typeof ev.total_page_batches === "number" ? ev.total_page_batches : 0;
+              const srcs = Array.isArray(ev.sources) ? (ev.sources as string[]).join(", ") : "";
+              setProgressPct(0);
+              setProgressHint(`${srcs || "수집"} · 총 ${tot}페이지 단위`);
+              pushLog(`시작 · ${tot}단계 · 상세=${Boolean(ev.fetch_detail)}`);
+            } else if (typ === "progress") {
+              const ph = String(ev.phase ?? "");
+              if (ph === "connecting") {
+                setProgressHint("서버 응답 수신 · 수집 스레드 시작…");
+                pushLog("연결됨");
+              } else if (ph === "fetch_list") {
+                setProgressHint(
+                  `${ev.source} · "${ev.keyword}" 목록 p${ev.page} 요청…`
+                );
+                pushLog(`목록 ${ev.source} "${ev.keyword}" p${ev.page}`);
+              } else if (ph === "detail_row") {
+                setProgressHint(
+                  `${ev.source} · "${ev.keyword}" 상세 ${ev.row}/${ev.rows_total}`
+                );
+                const done = ev.page_batches_total
+                  ? Math.min(
+                      99,
+                      ((Number(ev.page_batches_done) || 0) / Number(ev.page_batches_total)) * 100
+                    )
+                  : 0;
+                setProgressPct(done);
+                if ((Number(ev.row) || 0) % 5 === 1) {
+                  pushLog(`상세 ${ev.source} "${ev.keyword}" ${ev.row}/${ev.rows_total}`);
+                }
+              } else if (ph === "page_done") {
+                const tot = Number(ev.page_batches_total) || 1;
+                const done = Number(ev.page_batches_done) || 0;
+                setProgressPct(Math.min(100, (done / tot) * 100));
+                setProgressHint(
+                  `${ev.source} · "${ev.keyword}" p${ev.page} 저장 (${ev.new_ids_this_page}건 신규)`
+                );
+                pushLog(
+                  `페이지 완료 ${ev.source} "${ev.keyword}" p${ev.page} · 이번페이지 신규 ${ev.new_ids_this_page} · 누적 신규 ${ev.jobs_new_so_far}`
+                );
+              }
+            } else if (typ === "done" || typ === "cancelled") {
+              setProgressPct(100);
+              setProgressHint(typ === "cancelled" ? "중단됨 · 반영분 분석까지 수행" : "완료");
+              pushLog(typ === "cancelled" ? "취소/연결 종료 — 부분 반영" : "완료");
+            }
+          },
+        }
       );
       setResult(r);
     } catch (x) {
@@ -131,15 +224,20 @@ export function CollectPanel() {
           x.name === "AbortError") ||
         (x instanceof Error && x.name === "AbortError");
       if (aborted) {
-        setErr(
-          "요청이 취소되었거나 시간 초과(8분)입니다. 키워드·페이지 수를 줄이거나 상세 OCR을 끄세요. " +
-            "계속 느리면 `.env`에 NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 처럼 백엔드 직접 주소를 넣어 Next 프록시를 우회해 보세요."
-        );
+        if (cancelKindRef.current === "idle") {
+          setErr(
+            `진행 알림이 ${Math.round(COLLECT_STREAM_IDLE_MS / 60000)}분 이상 없어 중단했습니다. 백엔드·네트워크를 확인하거나 상세 OCR을 끄고 다시 시도해 보세요.`
+          );
+        } else {
+          setErr(
+            "수집을 취소했습니다. 이미 처리된 페이지까지의 공고는 서버 DB에 반영되었을 수 있습니다."
+          );
+        }
       } else {
         setErr(x instanceof Error ? x.message : "요청 실패");
       }
     } finally {
-      clearCollectTimeout();
+      clearIdleTimer();
       collectAbortRef.current = null;
       setLoading(false);
     }
@@ -228,6 +326,47 @@ export function CollectPanel() {
         </p>
       )}
 
+      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-xs">
+        <span className="text-slate-500">수집 사이트(목록 1페이지 스모크, DB 미저장)</span>
+        <button
+          type="button"
+          disabled={sourcesHealthLoading}
+          onClick={runSourcesHealthCheck}
+          className="rounded border border-slate-600 bg-slate-800 px-2 py-1 text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+        >
+          {sourcesHealthLoading ? "확인 중…" : "연결 확인"}
+        </button>
+        {sourcesHealth && (
+          <span className="flex flex-wrap gap-x-3 gap-y-1 text-slate-300">
+            <span>
+              사람인:{" "}
+              {sourcesHealth.saramin.ok ? (
+                <span className="text-emerald-400">
+                  OK ({sourcesHealth.saramin.listings}건 / {sourcesHealth.saramin.ms}ms)
+                </span>
+              ) : (
+                <span className="text-rose-400" title={sourcesHealth.saramin.error}>
+                  실패
+                </span>
+              )}
+            </span>
+            <span>
+              잡코리아:{" "}
+              {sourcesHealth.jobkorea.ok ? (
+                <span className="text-emerald-400">
+                  OK ({sourcesHealth.jobkorea.listings}건 / {sourcesHealth.jobkorea.ms}ms)
+                </span>
+              ) : (
+                <span className="text-rose-400" title={sourcesHealth.jobkorea.error}>
+                  실패
+                </span>
+              )}
+            </span>
+          </span>
+        )}
+        {sourcesHealthErr && <span className="text-rose-400">{sourcesHealthErr}</span>}
+      </div>
+
       <form onSubmit={onSubmit} className="mt-4 space-y-4">
         <div>
           <label className="block text-xs font-medium text-slate-500">검색 키워드 (쉼표/줄바꿈)</label>
@@ -305,18 +444,43 @@ export function CollectPanel() {
             </button>
           )}
           <span className="text-xs text-slate-500">
-            사이트 응답에 따라 수 분~십여 분 걸릴 수 있습니다. 멈춘 것 같으면 취소 후 페이지·키워드를 줄이거나{" "}
-            <code className="rounded bg-slate-900 px-1">NEXT_PUBLIC_API_URL</code>로 백엔드 직접 호출을
-            쓰세요. (최대 약 8분 후 자동 중단)
+            진행률은 NDJSON 스트림으로 표시됩니다. 진행 이벤트가 끊기면 약 {Math.round(COLLECT_STREAM_IDLE_MS / 60000)}분 후
+            자동 중단합니다(정상 진행 중에는 고정 8분 제한 없음). 로컬은{" "}
+            <code className="rounded bg-slate-900 px-1">NEXT_PUBLIC_API_URL</code>로 백엔드 직접 호출을 권장합니다.
           </span>
         </div>
       </form>
+
+      {loading && (
+        <div className="mt-4 space-y-2 rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+            <span className="min-w-0 flex-1 truncate text-slate-300">{progressHint || "연결 중…"}</span>
+            <span className="shrink-0 font-mono text-sky-400">{Math.round(progressPct)}%</span>
+          </div>
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-sky-600 to-emerald-500 transition-[width] duration-500 ease-out"
+              style={{ width: `${Math.max(2, progressPct)}%` }}
+            />
+          </div>
+          <ul className="max-h-32 space-y-0.5 overflow-y-auto font-mono text-[10px] leading-snug text-slate-500">
+            {progressLog.map((ln, i) => (
+              <li key={`${i}-${ln.slice(0, 24)}`}>{ln}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {err && (
         <p className="mt-3 text-sm text-rose-400 whitespace-pre-wrap">{err}</p>
       )}
       {result && (
         <div className="mt-3 text-sm text-slate-300">
+          {result.cancelled && (
+            <p className="mb-2 rounded border border-amber-800/60 bg-amber-950/30 px-2 py-1.5 text-xs text-amber-200">
+              일부만 수집된 뒤 중단되었습니다. 위 건수는 이미 DB에 반영된 분량입니다.
+            </p>
+          )}
           <p>
             가져온 건수(중복 포함): <strong>{result.jobs_fetched}</strong> · 신규 저장:{" "}
             <strong>{result.jobs_new}</strong>

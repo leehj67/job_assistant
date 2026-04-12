@@ -23,25 +23,63 @@ function browserDirectOrigin(): string | null {
   return u || null;
 }
 
+/** 백엔드 API 포트 (브라우저에서 LAN/로컬 추론 시). 미설정이면 8000. */
+function browserInferredApiPort(): string {
+  const p = process.env.NEXT_PUBLIC_API_PORT;
+  const s = p != null ? String(p).trim() : "";
+  return s || "8000";
+}
+
+const _PRIVATE_IPV4_RE =
+  /^(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/;
+
+function _isPrivateLanHostname(hostname: string): boolean {
+  return _PRIVATE_IPV4_RE.test(hostname);
+}
+
 /**
- * PDF 등 대용량 multipart는 Next 프록시(`app/api/[...path]`)를 거치면 환경에 따라 본문이 잘리거나 실패할 수 있음.
- * env 미설정 시에도 로컬 호스트에서는 기본 백엔드 포트로 직접 전송해 우회한다.
+ * 브라우저가 백엔드에 직접 붙을 때의 origin (끝 `/` 없음, `/api` 미포함).
+ * - `NEXT_PUBLIC_API_URL`이 있으면 그 값을 정규화해 사용.
+ * - 없으면 localhost·루프백·사설 IPv4·`.local`(mDNS)에서는 동일 호스트 + `NEXT_PUBLIC_API_PORT`(기본 8000)로 추론.
+ * - 그 외(배포 도메인 등)는 빈 문자열 → 동일 출처 `/api` 프록시 사용.
+ * SSR에서는 항상 `serverOrigin()` (빌드 시점 env).
  */
-function browserLargeUploadOrigin(): string {
-  const direct = browserDirectOrigin();
-  if (direct) return direct;
-  if (typeof window === "undefined") return serverOrigin();
-  const h = window.location.hostname;
-  if (h === "localhost" || h === "127.0.0.1") {
-    return "http://127.0.0.1:8000";
+export function browserBackendOrigin(): string {
+  if (typeof window === "undefined") {
+    return serverOrigin();
+  }
+  const fromEnv = browserDirectOrigin();
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+
+  const { protocol, hostname } = window.location;
+  const apiPort = browserInferredApiPort();
+
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1" ||
+    hostname === "[::1]"
+  ) {
+    return `http://127.0.0.1:${apiPort}`;
+  }
+  if (_isPrivateLanHostname(hostname) || hostname.endsWith(".local")) {
+    return `${protocol}//${hostname}:${apiPort}`;
   }
   return "";
 }
 
-/** 브라우저+로컬에서는 백엔드로 직접 호출해 최신 라우트를 쓰고 Next 프록시를 우회. */
+/**
+ * PDF 등 대용량 multipart는 Next 프록시를 거치면 환경에 따라 본문이 잘리거나 실패할 수 있어,
+ * 가능하면 `browserBackendOrigin()`으로 백엔드에 직접 전송한다.
+ */
+function browserLargeUploadOrigin(): string {
+  return browserBackendOrigin();
+}
+
+/** 브라우저에서는 가능하면 백엔드로 직접 호출해 최신 라우트·스트림을 쓰고 Next 프록시를 우회. */
 function browserBackendApiPath(apiPath: string): string {
   const p = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
-  const origin = browserLargeUploadOrigin();
+  const origin = browserBackendOrigin();
   if (origin) return `${origin.replace(/\/+$/, "")}${p}`;
   return `${apiBase()}${p}`;
 }
@@ -164,17 +202,21 @@ export type CollectResult = {
   errors: string[];
   /** 백엔드 최신 버전에서만 포함 */
   job_links?: CollectedJobLink[];
+  /** 스트림 수집 중 조기 종료 */
+  cancelled?: boolean;
 };
 
 /** 수집은 사이트 응답에 따라 매우 길어질 수 있음. 0이면 브라우저/프록시 기본(무제한에 가깝게) */
 export const COLLECT_FETCH_TIMEOUT_MS = 8 * 60 * 1000;
 
+/** NDJSON 스트림 수집: 이 시간(ms) 동안 서버에서 줄이 오지 않으면 클라이언트가 중단(진행 중이면 고정 8분 제한 없음) */
+export const COLLECT_STREAM_IDLE_MS = 15 * 60 * 1000;
+
 export async function postCollect(
   body: CollectBody,
   signal?: AbortSignal
 ): Promise<CollectResult> {
-  const direct = browserDirectOrigin();
-  const endpoint = direct ? `${direct}/api/collect` : `${apiBase()}/api/collect`;
+  const endpoint = browserBackendApiPath("/api/collect");
   const r = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -198,6 +240,74 @@ export async function postCollect(
   return r.json() as Promise<CollectResult>;
 }
 
+/** NDJSON 스트림 `POST /api/collect/stream` — 로컬에서는 백엔드로 직접 붙습니다. */
+export async function postCollectStream(
+  body: CollectBody,
+  options: {
+    signal: AbortSignal;
+    onEvent: (ev: unknown) => void;
+  }
+): Promise<CollectResult> {
+  const endpoint = browserBackendApiPath("/api/collect/stream");
+  const r = await fetch(endpoint, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/x-ndjson, application/json",
+    },
+    body: JSON.stringify({
+      fetch_detail: false,
+      use_ocr: true,
+      ...body,
+    }),
+    signal: options.signal,
+  });
+  if (!r.ok || !r.body) {
+    let msg = `HTTP ${r.status}`;
+    try {
+      const t = await r.text();
+      if (t) msg = t.length > 500 ? t.slice(0, 500) + "…" : t;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let last: CollectResult | null = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      const s = line.trim();
+      if (!s) continue;
+      let ev: unknown;
+      try {
+        ev = JSON.parse(s) as unknown;
+      } catch {
+        continue;
+      }
+      options.onEvent(ev);
+      if (ev && typeof ev === "object" && "type" in ev) {
+        const typ = (ev as { type: string }).type;
+        if (typ === "done" || typ === "cancelled") {
+          last = (ev as unknown as { payload: CollectResult }).payload;
+        }
+        if (typ === "error") {
+          throw new Error((ev as { message?: string }).message ?? "수집 오류");
+        }
+      }
+    }
+  }
+  if (!last) throw new Error("수집 응답이 비었습니다.");
+  return last;
+}
+
 export function getLlmStatus() {
   return fetchJson<{
     openai_configured: boolean;
@@ -206,6 +316,39 @@ export function getLlmStatus() {
     ollama_model: string;
     ollama_reachable: boolean;
   }>("/api/llm/status");
+}
+
+export type CollectSourceHealthItem = {
+  ok: boolean;
+  listings: number;
+  ms: number;
+  error?: string;
+};
+
+export type CollectSourcesHealth = {
+  saramin: CollectSourceHealthItem;
+  jobkorea: CollectSourceHealthItem;
+};
+
+/** 사람인·잡코리아 목록 1회 스모크(저장 없음). 수집 전 연결 확인용. */
+export async function getCollectSourcesHealth(): Promise<CollectSourcesHealth> {
+  const url = browserBackendApiPath("/api/collect/sources-health");
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), 120_000);
+  try {
+    const r = await fetch(url, { cache: "no-store", signal: controller.signal });
+    if (!r.ok) throw new Error(`sources-health HTTP ${r.status}`);
+    return r.json() as Promise<CollectSourcesHealth>;
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      throw new Error(
+        "연결 확인 시간 초과(2분)입니다. uvicorn 기동·방화벽·NEXT_PUBLIC_API_URL·NEXT_PUBLIC_API_PORT(기본 8000)를 확인하세요."
+      );
+    }
+    throw e;
+  } finally {
+    clearTimeout(tid);
+  }
 }
 
 export type KeywordAnalysis = {

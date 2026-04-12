@@ -25,9 +25,18 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Find My Job API", version="0.1.0", lifespan=lifespan)
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+# LAN·로컬에서 프론트와 API 포트가 다를 때 브라우저 직접 호출 CORS 통과
+_cors_origin_regex = (
+    r"^https?://(localhost|127\.0\.0\.1|\[::1\]|::1)(:\d+)?$"
+    r"|^https?://192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$"
+    r"|^https?://10\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$"
+    r"|^https?://172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}(:\d+)?$"
+    r"|^https?://[a-zA-Z0-9.-]+\.local(:\d+)?$"
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins or ["*"],
+    allow_origin_regex=_cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
