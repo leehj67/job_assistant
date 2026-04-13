@@ -58,4 +58,9 @@ def run_sqlite_migrations() -> None:
                 "ON jobs (source, external_id)"
             )
         )
+    if "consultant_custom_categories" in insp.get_table_names():
+        ccat = {c["name"] for c in insp.get_columns("consultant_custom_categories")}
+        with engine.begin() as conn:
+            if "meta" not in ccat:
+                conn.execute(text("ALTER TABLE consultant_custom_categories ADD COLUMN meta TEXT"))
     _backfill_jobs_metadata_legacy()

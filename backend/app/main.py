@@ -22,7 +22,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Find My Job API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="일햇음청년 제조기 API", version="0.1.0", lifespan=lifespan)
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 # LAN·로컬에서 프론트와 API 포트가 다를 때 브라우저 직접 호출 CORS 통과
@@ -66,8 +66,9 @@ def root():
     """브라우저에서 루트만 열면 이 JSON이 보입니다. API는 /api 아래입니다."""
     caps = _registered_path_methods()
     post_collect = caps.get("/api/applicant/collect-suggestions", [])
+    post_cover = caps.get("/api/applicant/job-cover-letter", [])
     return {
-        "service": "find_my_job",
+        "service": "ilhaeseum_youth_maker",
         "message_ko": "정상 동작 중입니다. 데이터 API는 /api 경로를 사용하세요. Swagger는 /docs 입니다.",
         "docs": "/docs",
         "openapi_json": "/openapi.json",
@@ -76,6 +77,7 @@ def root():
         "hint": "브라우저에서 http://127.0.0.1:8000/docs 또는 http://127.0.0.1:8000/api/health 를 열어 보세요.",
         "diagnostics": {
             "post_collect_suggestions_registered": "POST" in post_collect,
-            "if_false_restart_backend": "이 프로젝트 backend 폴더에서 uvicorn을 다시 띄우세요. 오래된 프로세스는 POST /api/applicant/collect-suggestions 가 없습니다.",
+            "post_job_cover_letter_registered": "POST" in post_cover,
+            "if_false_restart_backend": "이 프로젝트 backend 폴더에서 uvicorn을 다시 띄우세요. 오래된 프로세스는 POST /api/applicant/collect-suggestions 또는 POST /api/applicant/job-cover-letter 가 없을 수 있습니다.",
         },
     }

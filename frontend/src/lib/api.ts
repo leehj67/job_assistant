@@ -108,7 +108,15 @@ async function fetchJson<T>(path: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
-export type CategoryItem = { slug: string; label: string };
+export type CategoryItem = {
+  slug: string;
+  label: string;
+  is_builtin?: boolean;
+  id?: number | null;
+  primary_keywords?: string[];
+  similar_keywords?: string[];
+  orphan_job_bucket?: boolean;
+};
 
 export type Overview = {
   job_counts_by_category: Record<string, number>;
@@ -148,6 +156,26 @@ export type Recommendation = {
 
 export function getCategories() {
   return fetchJson<CategoryItem[]>("/api/categories");
+}
+
+export async function postApplicantAnalysisCategory(body: { label: string; keywords?: string }) {
+  const r = await fetch(`${apiBase()}/api/applicant/analysis-categories`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label: body.label, keywords: body.keywords ?? "" }),
+    cache: "no-store",
+  });
+  if (!r.ok) {
+    let msg = `analysis-categories ${r.status}`;
+    try {
+      const j = (await r.json()) as { detail?: unknown };
+      if (typeof j.detail === "string") msg = j.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  return r.json() as Promise<CategoryItem>;
 }
 
 export function getOverview() {
@@ -462,6 +490,70 @@ export async function postApplicantMatchJobs(body: MatchJobsBody) {
   });
   if (!r.ok) throw new Error(`match-jobs ${r.status}`);
   return r.json() as Promise<{ resume_skills: ResumeSkillItem[]; jobs: MatchedJobItem[] }>;
+}
+
+export type JobCoverLetterBody = {
+  job_id: number;
+  resume_text?: string | null;
+  career_summary?: string | null;
+};
+
+export type JobCoverLetterResult = {
+  job_id: number;
+  title: string;
+  company: string;
+  text: string;
+  generated_by: string;
+  char_count: number;
+};
+
+/** 공고별 자기소개서 — 클릭 시에만 LLM 호출 (`match-jobs`와 동일하게 브라우저는 `/api` 프록시로 통일해 BACKEND_URL과 포트 불일치를 피함) */
+export async function postApplicantJobCoverLetter(body: JobCoverLetterBody) {
+  const url = `${apiBase()}/api/applicant/job-cover-letter`;
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!r.ok) {
+    let msg = `자기소개서 API 오류 (${r.status})`;
+    try {
+      const raw = await r.text();
+      let j: { detail?: unknown } = {};
+      try {
+        j = JSON.parse(raw) as { detail?: unknown };
+      } catch {
+        if (raw.trim()) msg = raw.slice(0, 300);
+      }
+      const d = j.detail;
+      if (typeof d === "string") {
+        msg = d;
+        if (
+          r.status === 404 &&
+          (d === "Not Found" || d.toLowerCase() === "not found")
+        ) {
+          msg =
+            "자기소개서 라우트가 이 백엔드에 없습니다(404). 보통 포트(예: 8000)에 옛 uvicorn이 남아 있거나, 다른 폴더의 백엔드가 떠 있을 때 발생합니다. 작업 관리자에서 해당 python을 종료한 뒤, 이 저장소 `backend`에서 `python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload` 로 다시 띄우세요. `GET /api/health`의 `routes_post.post_job_cover_letter`(또는 openapi.json에 job-cover-letter)로 확인할 수 있습니다. 프록시를 쓰는 경우 `frontend/.env.local`의 BACKEND_URL도 실제 백엔드와 같아야 합니다.";
+          try {
+            const hr = await fetch(`${apiBase()}/api/health`, { cache: "no-store" });
+            if (hr.ok) {
+              const h = (await hr.json()) as { hint_ko?: string; routes_post?: Record<string, boolean> };
+              if (h.hint_ko) msg = `${msg}\n\n[백엔드 /api/health]\n${h.hint_ko}`;
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+      } else if (Array.isArray(d)) {
+        msg = JSON.stringify(d);
+      }
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  return r.json() as Promise<JobCoverLetterResult>;
 }
 
 export type IndustrySkillDemand = {
@@ -964,6 +1056,8 @@ export type ConsultantCategoryItem = {
   label: string;
   is_builtin: boolean;
   id: number | null;
+  primary_keywords?: string[];
+  similar_keywords?: string[];
 };
 
 export async function getConsultantCategories(): Promise<ConsultantCategoryItem[]> {

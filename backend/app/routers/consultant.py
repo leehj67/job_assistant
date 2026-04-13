@@ -74,16 +74,26 @@ def _student_or_404(db: Session, sid: int) -> ConsultantStudent:
 def list_consultant_categories(db: Session = Depends(get_db)):
     """기본 직군 + 컨설턴트가 추가한 직군."""
     out: list[ConsultantCategoryItemOut] = [
-        ConsultantCategoryItemOut(slug=k, label=v, is_builtin=True, id=None)
+        ConsultantCategoryItemOut(
+            slug=k, label=v, is_builtin=True, id=None, primary_keywords=[], similar_keywords=[]
+        )
         for k, v in sorted(CATEGORY_LABEL.items(), key=lambda x: x[1])
     ]
     customs = (
         db.query(ConsultantCustomCategory).order_by(ConsultantCustomCategory.label_ko.asc()).all()
     )
     for c in customs:
+        meta = c.meta if isinstance(c.meta, dict) else {}
+        pk = [str(x) for x in (meta.get("primary_keywords") or []) if str(x).strip()]
+        sk = [str(x) for x in (meta.get("similar_keywords") or []) if str(x).strip()]
         out.append(
             ConsultantCategoryItemOut(
-                slug=c.slug, label=c.label_ko, is_builtin=False, id=c.id
+                slug=c.slug,
+                label=c.label_ko,
+                is_builtin=False,
+                id=c.id,
+                primary_keywords=pk,
+                similar_keywords=sk,
             )
         )
     return out
@@ -103,7 +113,12 @@ def create_consultant_category(body: ConsultantCategoryCreate, db: Session = Dep
     db.commit()
     db.refresh(row)
     return ConsultantCategoryItemOut(
-        slug=row.slug, label=row.label_ko, is_builtin=False, id=row.id
+        slug=row.slug,
+        label=row.label_ko,
+        is_builtin=False,
+        id=row.id,
+        primary_keywords=[],
+        similar_keywords=[],
     )
 
 

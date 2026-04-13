@@ -1,8 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { postResumeInsight, type ResumeInsight } from "@/lib/api";
 import { storeCollectSuggestions } from "@/lib/collectApply";
+
+const INSIGHT_STEPS: { label: string; hint: string; log: string }[] = [
+  {
+    label: "이력서",
+    hint: "1단계: 이력서·경력 요약 정규화 및 직군 컨텍스트 로드",
+    log: "이력서 텍스트 수신 · 분석 직군 매핑",
+  },
+  {
+    label: "시장 메트릭",
+    hint: "2단계: 공고·트렌드 DB에서 수요·관심·메타 집계",
+    log: "시장 수요·관심 지표와 공고 메타 교차",
+  },
+  {
+    label: "스킬 매칭",
+    hint: "3단계: 이력서 스킬 vs 시장 상위 스킬 갭·차별화 계산",
+    log: "갭 영향도 · 차별화 자산 스코어링",
+  },
+  {
+    label: "인사이트 합성",
+    hint: "4단계: LLM 또는 규칙 기반으로 요약·액션 플랜 생성",
+    log: "추천 문장·수집 키워드 후보 생성",
+  },
+];
 
 const CAT_KO: Record<string, string> = {
   data_analyst: "데이터 분석가",
@@ -20,20 +43,77 @@ export function ResumeInsightPanel(props: {
   const [data, setData] = useState<ResumeInsight | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [progressPct, setProgressPct] = useState(0);
+  const [progressHint, setProgressHint] = useState("");
+  const [progressLog, setProgressLog] = useState<string[]>([]);
+  const [activeStep, setActiveStep] = useState(0);
+  const stepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (stepTimerRef.current) {
+        clearInterval(stepTimerRef.current);
+        stepTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  function startInsightProgressTimers() {
+    if (stepTimerRef.current) {
+      clearInterval(stepTimerRef.current);
+      stepTimerRef.current = null;
+    }
+    setActiveStep(0);
+    setProgressPct(6);
+    setProgressHint(INSIGHT_STEPS[0].hint);
+    setProgressLog([INSIGHT_STEPS[0].log]);
+
+    let stepIdx = 0;
+    stepTimerRef.current = setInterval(() => {
+      if (stepIdx >= INSIGHT_STEPS.length - 1) return;
+      stepIdx += 1;
+      setActiveStep(stepIdx);
+      const s = INSIGHT_STEPS[stepIdx];
+      setProgressHint(s.hint);
+      setProgressLog((prev) => [...prev, s.log].slice(-14));
+      const pct = Math.min(82, Math.round(((stepIdx + 1) / INSIGHT_STEPS.length) * 78) + 4);
+      setProgressPct(pct);
+    }, 1000);
+  }
+
+  function stopInsightProgressTimers() {
+    if (stepTimerRef.current) {
+      clearInterval(stepTimerRef.current);
+      stepTimerRef.current = null;
+    }
+  }
 
   async function run() {
     setLoading(true);
     setErr(null);
+    setData(null);
+    startInsightProgressTimers();
     try {
       const r = await postResumeInsight({
         resume_text: props.resumeText,
         career_summary: props.careerSummary,
         category: props.category === "all" ? null : props.category,
       });
+      stopInsightProgressTimers();
+      setActiveStep(INSIGHT_STEPS.length - 1);
+      setProgressPct(100);
+      setProgressHint("완료 · 시장 인사이트 카드 반영");
+      setProgressLog((prev) => [...prev, "응답 수신 · UI 갱신"].slice(-14));
       setData(r);
     } catch (e) {
+      stopInsightProgressTimers();
+      setProgressPct(0);
+      setProgressHint("");
+      setProgressLog([]);
+      setActiveStep(0);
       setErr(e instanceof Error ? e.message : "분석 실패");
     } finally {
+      stopInsightProgressTimers();
       setLoading(false);
     }
   }
@@ -87,6 +167,67 @@ export function ResumeInsightPanel(props: {
         <p className="rounded border border-red-900/40 bg-red-950/30 px-3 py-2 text-sm text-red-200">
           {err}
         </p>
+      )}
+
+      {loading && (
+        <div className="space-y-3 rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+            시장 인사이트 · 분석 단계
+          </p>
+          <ol className="flex flex-wrap items-center gap-1 text-[11px] sm:flex-nowrap sm:gap-0">
+            {INSIGHT_STEPS.map((st, i) => {
+              const done = i < activeStep;
+              const on = i === activeStep;
+              return (
+                <li key={st.label} className="flex min-w-0 flex-1 items-center">
+                  <div className="flex min-w-0 flex-col items-center gap-0.5 sm:flex-1">
+                    <span
+                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[11px] font-semibold ${
+                        on
+                          ? "border-sky-500 bg-sky-600/30 text-sky-100 shadow-[0_0_12px_rgba(56,189,248,0.25)]"
+                          : done
+                            ? "border-emerald-700/80 bg-emerald-950/50 text-emerald-200"
+                            : "border-slate-700 bg-slate-900 text-slate-500"
+                      }`}
+                    >
+                      {done ? "✓" : i + 1}
+                    </span>
+                    <span
+                      className={`hidden max-w-[5.5rem] truncate text-center sm:block ${
+                        on ? "text-sky-200" : done ? "text-emerald-200/90" : "text-slate-500"
+                      }`}
+                    >
+                      {st.label}
+                    </span>
+                  </div>
+                  {i < INSIGHT_STEPS.length - 1 && (
+                    <div
+                      className={`mx-0.5 hidden h-0.5 min-w-[12px] flex-1 sm:block ${
+                        done ? "bg-emerald-700/60" : "bg-slate-800"
+                      }`}
+                      aria-hidden
+                    />
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+            <span className="min-w-0 flex-1 truncate text-slate-300">{progressHint || "연결 중…"}</span>
+            <span className="shrink-0 font-mono text-indigo-300">{Math.round(progressPct)}%</span>
+          </div>
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-indigo-600 to-emerald-500 transition-[width] duration-500 ease-out"
+              style={{ width: `${Math.max(2, progressPct)}%` }}
+            />
+          </div>
+          <ul className="max-h-32 space-y-0.5 overflow-y-auto font-mono text-[10px] leading-snug text-slate-500">
+            {progressLog.map((ln, i) => (
+              <li key={`${i}-${ln.slice(0, 28)}`}>{ln}</li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {data && (

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getAnalyzedKeywords, getOverview } from "@/lib/api";
+import { getAnalyzedKeywords, getCategories, getOverview } from "@/lib/api";
 import { CollectPanel } from "@/components/CollectPanel";
 import { ResumeDashboardPanel } from "@/components/ResumeDashboardPanel";
 import { JobCountBar } from "@/components/charts/JobCountBar";
@@ -7,11 +7,13 @@ import { JobCountBar } from "@/components/charts/JobCountBar";
 export default async function HomePage() {
   let overview = null as Awaited<ReturnType<typeof getOverview>> | null;
   let analyzedKeywords = [] as Awaited<ReturnType<typeof getAnalyzedKeywords>>;
+  let categoryLinks = [] as Awaited<ReturnType<typeof getCategories>>;
   let err = false;
   try {
-    [overview, analyzedKeywords] = await Promise.all([
+    [overview, analyzedKeywords, categoryLinks] = await Promise.all([
       getOverview(),
       getAnalyzedKeywords(60).catch(() => []),
+      getCategories().catch(() => []),
     ]);
   } catch {
     err = true;
@@ -26,8 +28,8 @@ export default async function HomePage() {
         <p className="max-w-3xl text-slate-400">
           단순 공고 나열이 아니라, <strong className="text-slate-200">채용에서 요구되는 역량</strong>
           과 <strong className="text-slate-200">대중의 검색 관심</strong>을 같은 축에서 비교합니다.
-          데이터/AI/백엔드 직군 MVP 범위에서 과포화·기회 영역을 구분하고, 학원과 취준생에게 맞춤
-          문장을 제시합니다.
+          기본 직군 외에도 분석·수집 직군을 직접 추가할 수 있으며, 공고가 없을 때는 등록 키워드·유사어로
+          다른 직군에 수집된 공고도 함께 찾아 표시합니다.
         </p>
         <p className="text-sm">
           <Link href="/consultant" className="text-sky-400 hover:underline">
@@ -86,17 +88,20 @@ export default async function HomePage() {
           <section>
             <h2 className="mb-3 text-lg font-semibold text-white">직군 상세 분석</h2>
             <div className="flex flex-wrap gap-2">
-              {[
-                ["data_analyst", "데이터 분석가"],
-                ["ai_engineer", "AI 엔지니어"],
-                ["backend_developer", "백엔드 개발자"],
-              ].map(([slug, label]) => (
+              {(categoryLinks.length
+                ? categoryLinks
+                : [
+                    { slug: "data_analyst", label: "데이터 분석가" },
+                    { slug: "ai_engineer", label: "AI 엔지니어" },
+                    { slug: "backend_developer", label: "백엔드 개발자" },
+                  ]
+              ).map((c) => (
                 <Link
-                  key={slug}
-                  href={`/category/${slug}`}
+                  key={c.slug}
+                  href={`/category/${encodeURIComponent(c.slug)}`}
                   className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm text-sky-300 hover:border-sky-600 hover:bg-slate-800"
                 >
-                  {label} →
+                  {c.label} →
                 </Link>
               ))}
             </div>

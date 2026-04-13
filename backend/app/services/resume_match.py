@@ -10,6 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import ExtractedSkill, Job
+from app.services.category_scope import job_ids_for_category
 from app.services.application_draft import resume_covers_requirement_line
 from app.services.posting_metadata import merged_job_metadata
 from app.services.skill_normalize import extract_skills_from_text
@@ -106,7 +107,13 @@ def match_jobs_for_resume(
 
     q = db.query(Job).order_by(Job.id.desc())
     if category:
-        q = q.filter(Job.category == category)
+        jids = job_ids_for_category(db, category, limit=450)
+        if not jids:
+            return {
+                "resume_skills": [{"normalized": s[0], "skill_group": s[1]} for s in skill_rows],
+                "jobs": [],
+            }
+        q = q.filter(Job.id.in_(jids))
     jobs = q.limit(400).all()
     if not jobs:
         return {
@@ -189,13 +196,24 @@ def preparation_insights(
         .join(Job, Job.id == ExtractedSkill.job_id)
     )
     if category:
-        q = q.filter(Job.category == category)
-    rows = (
-        q.group_by(ExtractedSkill.normalized_skill, ExtractedSkill.skill_group)
-        .order_by(func.count(func.distinct(ExtractedSkill.job_id)).desc())
-        .limit(top_n)
-        .all()
-    )
+        jids = job_ids_for_category(db, category, limit=500)
+        if not jids:
+            rows = []
+        else:
+            q = q.filter(Job.id.in_(jids))
+            rows = (
+                q.group_by(ExtractedSkill.normalized_skill, ExtractedSkill.skill_group)
+                .order_by(func.count(func.distinct(ExtractedSkill.job_id)).desc())
+                .limit(top_n)
+                .all()
+            )
+    else:
+        rows = (
+            q.group_by(ExtractedSkill.normalized_skill, ExtractedSkill.skill_group)
+            .order_by(func.count(func.distinct(ExtractedSkill.job_id)).desc())
+            .limit(top_n)
+            .all()
+        )
 
     industry = [
         {"normalized_skill": r[0], "skill_group": r[1], "job_count": int(r[2])}

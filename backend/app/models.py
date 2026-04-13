@@ -104,13 +104,14 @@ class ApplicantProfile(Base):
 
 
 class ConsultantCustomCategory(Base):
-    """기본 3직군 외에 컨설턴트가 추가하는 타깃 직군 슬러그."""
+    """기본 3직군 외 분석·수집용 직군(대시보드/컨설턴트 공용). meta: primary_keywords, similar_keywords."""
 
     __tablename__ = "consultant_custom_categories"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     label_ko: Mapped[str] = mapped_column(String(128))
+    meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

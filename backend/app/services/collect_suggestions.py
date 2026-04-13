@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.models import ConsultantCustomCategory
 from app.seed import CATEGORY_LABEL
 from app.services.resume_match import extract_resume_skills, preparation_insights
 
@@ -269,6 +270,23 @@ def build_collect_suggestions(
 
     if not keywords:
         keywords = _CATEGORY_SEARCH_EXTRAS[primary][:]
+
+    if hint:
+        cr = db.query(ConsultantCustomCategory).filter(ConsultantCustomCategory.slug == hint).first()
+        if cr and isinstance(cr.meta, dict):
+            meta = cr.meta
+            extra = [str(x).strip() for x in (meta.get("primary_keywords") or []) if str(x).strip()]
+            extra += [str(x).strip() for x in (meta.get("similar_keywords") or []) if str(x).strip()]
+            lab = (cr.label_ko or "").strip()
+            if lab:
+                extra.insert(0, lab)
+            seen_kw = {k.lower() for k in keywords}
+            for k in extra:
+                if k.lower() not in seen_kw:
+                    keywords.insert(0, k)
+                    seen_kw.add(k.lower())
+            keywords = keywords[:22]
+            notes.insert(0, f"【등록 직군: {cr.label_ko}】검색 키워드·유사어를 수집 추천 앞에 합쳤습니다.")
 
     return {
         "search_keywords": keywords,

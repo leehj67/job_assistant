@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Find My Job Insight — macOS/Linux 초기 환경 (Python, OCR, 프론트, Ollama 선택)
+# 일햇음청년 제조기 — macOS/Linux 초기 환경 (Python, OCR, 프론트, Ollama 선택)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,7 +16,7 @@ for arg in "$@"; do
   esac
 done
 
-echo "=== Find My Job Insight — 로컬 설치 ==="
+echo "=== 일햇음청년 제조기 — 로컬 설치 ==="
 echo "저장소: $REPO_ROOT"
 
 if command -v python3 >/dev/null 2>&1; then

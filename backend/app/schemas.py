@@ -25,7 +25,10 @@ class CollectRequest(BaseModel):
     """키워드 검색으로 사람인·잡코리아에서 공고를 가져와 분석합니다."""
 
     keywords: list[str] = Field(..., min_length=1, description="검색 키워드 (복수)")
-    category: str = Field(..., description="직군 슬러그: data_analyst | ai_engineer | backend_developer")
+    category: str = Field(
+        ...,
+        description="기본 직군 슬러그, 등록 직군 슬러그, 또는 이미 DB에 있는 공고 category 문자열",
+    )
     sources: list[Literal["saramin", "jobkorea"]] = Field(
         default_factory=lambda: ["saramin", "jobkorea"]
     )
@@ -219,18 +222,64 @@ class MatchedJobItemOut(BaseModel):
     )
 
 
+class AnalysisCategoryCreate(BaseModel):
+    """대시보드에서 추가하는 분석·수집용 직군(검색 키워드·유사어 자동 확장)."""
+
+    label: str = Field(..., min_length=1, max_length=120, description="표시 이름 (예: 프론트엔드)")
+    keywords: str = Field(
+        "",
+        max_length=4000,
+        description="이 직군으로 사람인·잡코리아에 넣을 검색어. 쉼표·줄바꿈 구분. 비우면 라벨만 사용",
+    )
+
+
+class CategoryItemOut(BaseModel):
+    slug: str
+    label: str
+    is_builtin: bool = True
+    id: int | None = None
+    primary_keywords: list[str] = Field(default_factory=list)
+    similar_keywords: list[str] = Field(default_factory=list)
+    orphan_job_bucket: bool = Field(
+        False, description="등록 없이 과거 수집으로만 존재하는 category 문자열"
+    )
+
+
 class MatchJobsRequest(BaseModel):
     """이력서·경력 텍스트로 공고 적합도 추천. 필드 생략 시에만 저장 프로필을 쓰고, 빈 문자열은 화면에서 비운 값으로 처리."""
 
     resume_text: str | None = None
     career_summary: str | None = None
-    category: str | None = Field(None, description="직군 필터: data_analyst | ai_engineer | backend_developer")
+    category: str | None = Field(
+        None,
+        description="직군 필터: 기본 3종·등록 직군 슬러그·DB 공고 category",
+    )
     limit: int = Field(25, ge=1, le=100)
 
 
 class MatchJobsResponse(BaseModel):
     resume_skills: list[ResumeSkillItemOut]
     jobs: list[MatchedJobItemOut]
+
+
+class JobCoverLetterRequest(BaseModel):
+    """공고별 자기소개서 — 버튼 클릭 시에만 LLM 호출. 필드 생략 시 저장 프로필 사용."""
+
+    job_id: int = Field(..., ge=1)
+    resume_text: str | None = None
+    career_summary: str | None = None
+
+
+class JobCoverLetterOut(BaseModel):
+    job_id: int
+    title: str
+    company: str
+    text: str
+    generated_by: str = Field(
+        ...,
+        description="llm: OpenAI 또는 Ollama 성공, fallback: LLM 없음·실패 시 안내·뼈대",
+    )
+    char_count: int = 0
 
 
 class IndustrySkillDemandOut(BaseModel):
@@ -522,6 +571,8 @@ class ConsultantCategoryItemOut(BaseModel):
     label: str
     is_builtin: bool
     id: int | None = None
+    primary_keywords: list[str] = Field(default_factory=list)
+    similar_keywords: list[str] = Field(default_factory=list)
 
 
 class ConsultantCategoryCreate(BaseModel):

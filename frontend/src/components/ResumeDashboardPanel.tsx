@@ -1,31 +1,34 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ResumeAnalysisCharts } from "@/components/ResumeAnalysisCharts";
 import { ResumeInsightPanel } from "@/components/ResumeInsightPanel";
 import {
   getApplicantPreparation,
   getApplicantProfile,
+  getCategories,
+  postApplicantJobCoverLetter,
   postApplicantMatchJobs,
   postCollectSuggest,
   postResumePdfAnalyze,
   putApplicantProfile,
   type MatchedJobItem,
   type PreparationInsight,
+  type CategoryItem,
   type ResumePdfAnalyzeResult,
   type ResumeSkillItem,
 } from "@/lib/api";
 import { storeCollectSuggestions } from "@/lib/collectApply";
 
-const CATS = [
-  { slug: "all", label: "전체 직군" },
-  { slug: "data_analyst", label: "데이터 분석가" },
-  { slug: "ai_engineer", label: "AI 엔지니어" },
-  { slug: "backend_developer", label: "백엔드 개발자" },
-];
-
 export function ResumeDashboardPanel() {
+  const [dashCats, setDashCats] = useState<CategoryItem[]>([
+    { slug: "all", label: "전체 직군" },
+    { slug: "data_analyst", label: "데이터 분석가" },
+    { slug: "ai_engineer", label: "AI 엔지니어" },
+    { slug: "backend_developer", label: "백엔드 개발자" },
+  ]);
+  const dashSlugs = useMemo(() => new Set(dashCats.map((c) => c.slug)), [dashCats]);
   const [resumeText, setResumeText] = useState("");
   const [careerSummary, setCareerSummary] = useState("");
   const [category, setCategory] = useState("data_analyst");
@@ -37,6 +40,12 @@ export function ResumeDashboardPanel() {
   const [saveOk, setSaveOk] = useState<string | null>(null);
   const [resumeSkills, setResumeSkills] = useState<ResumeSkillItem[]>([]);
   const [matchedJobs, setMatchedJobs] = useState<MatchedJobItem[]>([]);
+  const [jobCoverById, setJobCoverById] = useState<
+    Record<
+      number,
+      { loading: boolean; text?: string; err?: string; generated_by?: string; char_count?: number }
+    >
+  >({});
   const [prep, setPrep] = useState<PreparationInsight | null>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [applyPdfToProfile, setApplyPdfToProfile] = useState(true);
@@ -53,6 +62,26 @@ export function ResumeDashboardPanel() {
         /* 프로필 없음 등은 무시 */
       });
   }, []);
+
+  useEffect(() => {
+    getCategories()
+      .then((c) => {
+        if (c.length)
+          setDashCats([{ slug: "all", label: "전체 직군" }, ...c]);
+      })
+      .catch(() => {
+        /* 기본 목록 유지 */
+      });
+  }, []);
+
+  useEffect(() => {
+    if (dashCats.length > 0 && !dashSlugs.has(category)) {
+      setCategory(dashCats[0].slug);
+    }
+    if (dashCats.length > 0 && !dashSlugs.has(prepCategory)) {
+      setPrepCategory(dashCats[0].slug);
+    }
+  }, [dashCats, dashSlugs, category, prepCategory]);
 
   async function onSave(e: React.FormEvent) {
     e.preventDefault();
@@ -87,10 +116,41 @@ export function ResumeDashboardPanel() {
       });
       setResumeSkills(r.resume_skills);
       setMatchedJobs(r.jobs);
+      setJobCoverById({});
     } catch (x) {
       setErr(x instanceof Error ? x.message : "매칭 실패");
     } finally {
       setMatching(false);
+    }
+  }
+
+  async function onJobCoverLetter(jobId: number) {
+    if (!resumeText.trim() && !careerSummary.trim()) {
+      setErr("자기소개서 생성: 이력서 본문 또는 경력 요약을 먼저 입력해 주세요.");
+      return;
+    }
+    setErr(null);
+    setJobCoverById((m) => ({ ...m, [jobId]: { loading: true } }));
+    try {
+      const r = await postApplicantJobCoverLetter({
+        job_id: jobId,
+        resume_text: resumeText,
+        career_summary: careerSummary,
+      });
+      setJobCoverById((m) => ({
+        ...m,
+        [jobId]: {
+          loading: false,
+          text: r.text,
+          generated_by: r.generated_by,
+          char_count: r.char_count,
+        },
+      }));
+    } catch (x) {
+      setJobCoverById((m) => ({
+        ...m,
+        [jobId]: { loading: false, err: x instanceof Error ? x.message : "생성 실패" },
+      }));
     }
   }
 
@@ -253,7 +313,7 @@ export function ResumeDashboardPanel() {
               onChange={(e) => setCategory(e.target.value)}
               className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200"
             >
-              {CATS.map((c) => (
+              {dashCats.map((c) => (
                 <option key={c.slug} value={c.slug}>
                   {c.label} (추천 범위)
                 </option>
@@ -426,14 +486,16 @@ export function ResumeDashboardPanel() {
               <h3 className="text-sm font-semibold text-slate-200">적합도 순 공고</h3>
               <p className="mt-1 text-xs text-slate-500">
                 공고에 추출된 스킬·제목·자격요건 문구와의 겹침을 반영한 데모 점수입니다. 자격요건은
-                공고 메타(파싱된 필수 항목)와 이력서·경력 합본을 비교합니다.
+                공고 메타(파싱된 필수 항목)와 이력서·경력 합본을 비교합니다. 각 공고의「자기소개서
+                생성」은 클릭할 때만 LLM이 호출되어 불필요한 토큰 사용을 줄입니다(약 1000자 분량).
               </p>
               <ul className="mt-3 space-y-2">
                 {matchedJobs.map((j) => (
                   <li
                     key={j.id}
-                    className="flex flex-col gap-1 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+                    className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2"
                   >
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <Link
                         href={`/job/${j.id}`}
@@ -473,21 +535,68 @@ export function ResumeDashboardPanel() {
                         </p>
                       )}
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
+                    <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
                       <span className="rounded bg-slate-800 px-2 py-1 text-xs text-amber-200">
                         점수 {j.match_score.toFixed(1)}
                       </span>
-                      {j.source_url && (
-                        <a
-                          href={j.source_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-xs text-slate-400 underline hover:text-slate-200"
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {j.source_url && (
+                          <a
+                            href={j.source_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs text-slate-400 underline hover:text-slate-200"
+                          >
+                            원문
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          disabled={
+                            Boolean(jobCoverById[j.id]?.loading) ||
+                            (!resumeText.trim() && !careerSummary.trim())
+                          }
+                          onClick={() => onJobCoverLetter(j.id)}
+                          className="rounded border border-violet-700/80 bg-violet-950/40 px-2 py-1 text-xs text-violet-200 hover:bg-violet-900/35 disabled:opacity-50"
+                          title="이 공고에 맞춘 자기소개서 초안을 LLM으로 생성합니다(클릭 시에만 호출)"
                         >
-                          원문
-                        </a>
-                      )}
+                          {jobCoverById[j.id]?.loading ? "생성 중…" : "자기소개서 생성"}
+                        </button>
+                      </div>
                     </div>
+                    </div>
+                    {(jobCoverById[j.id]?.text || jobCoverById[j.id]?.err) && (
+                      <div className="w-full border-t border-slate-800/90 pt-3">
+                        {jobCoverById[j.id]?.err ? (
+                          <p className="text-xs text-rose-400">{jobCoverById[j.id]?.err}</p>
+                        ) : (
+                          <>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-xs text-slate-500">
+                                {jobCoverById[j.id]?.generated_by === "llm"
+                                  ? "LLM 생성 본문 (이력서·경력에 근거한 표현만 유지하세요)"
+                                  : "참고용 뼈대 (LLM 미연결 또는 응답 실패)"}{" "}
+                                · {jobCoverById[j.id]?.char_count ?? jobCoverById[j.id]?.text?.length}
+                                자
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const t = jobCoverById[j.id]?.text;
+                                  if (t) void navigator.clipboard.writeText(t);
+                                }}
+                                className="rounded border border-slate-600 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-800"
+                              >
+                                복사
+                              </button>
+                            </div>
+                            <div className="mt-2 max-h-72 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/80 p-3 text-sm leading-relaxed text-slate-200 whitespace-pre-wrap">
+                              {jobCoverById[j.id]?.text}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -507,7 +616,7 @@ export function ResumeDashboardPanel() {
             onChange={(e) => setPrepCategory(e.target.value)}
             className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200"
           >
-            {CATS.map((c) => (
+            {dashCats.map((c) => (
               <option key={c.slug} value={c.slug}>
                 {c.label}
               </option>

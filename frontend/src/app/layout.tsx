@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Find My Job Insight — 수요·관심 기반 교육·취업 전략",
+  title: "일햇음청년 제조기 — 수요·관심 기반 교육·취업 전략",
   description:
     "채용 시장 수요와 검색 트렌드를 비교해 교육기관과 취업준비생에게 학습 방향을 제안합니다.",
 };

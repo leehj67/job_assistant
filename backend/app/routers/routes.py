@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, get_db
 from app.models import (
     ApplicantProfile,
+    ConsultantCustomCategory,
     DemandSupplySummary,
     ExtractedSkill,
     Job,
@@ -22,9 +23,11 @@ from app.models import (
     TrendKeyword,
 )
 from app.schemas import (
+    AnalysisCategoryCreate,
     AnalyzedKeywordItemOut,
     ApplicantProfileOut,
     ApplicantProfileUpdate,
+    CategoryItemOut,
     CollectedJobLink,
     CollectRequest,
     CollectResult,
@@ -36,6 +39,8 @@ from app.schemas import (
     JobOut,
     KeywordJobItemOut,
     KeywordAnalysisOut,
+    JobCoverLetterOut,
+    JobCoverLetterRequest,
     MatchJobsRequest,
     MatchJobsResponse,
     OverviewOut,
@@ -47,6 +52,12 @@ from app.schemas import (
     TrendSeriesOut,
     TrendPointOut,
 )
+from app.services.analysis_category_keywords import (
+    auto_slug_for_label,
+    expand_similar_keywords,
+    parse_keyword_line,
+)
+from app.services.category_scope import collect_category_slugs, merge_collect_keywords
 from app.services.collection import collect_by_keywords, generate_collect_events
 from app.services.job_links import resolve_job_listing_url
 from app.services.application_draft import build_application_draft
@@ -59,6 +70,7 @@ from app.services.collect_suggestions import build_collect_suggestions
 from app.services.resume_insight import build_resume_insight
 from app.services.pdf_extract import extract_text_from_pdf_bytes
 from app.services.resume_dashboard import build_resume_dashboard
+from app.services.job_cover_letter import generate_job_cover_letter
 from app.services.resume_match import match_jobs_for_resume, preparation_insights
 from app.seed import CATEGORY_LABEL
 
@@ -66,6 +78,20 @@ MAX_PDF_BYTES = 12 * 1024 * 1024
 MAX_RESUME_TEXT_IN_JSON = 200_000
 
 router = APIRouter()
+
+
+def _registered_post_paths(app) -> dict[str, bool]:
+    """현재 프로세스에 실제로 올라간 주요 POST 라우트(진단용)."""
+    want = {
+        "/api/applicant/job-cover-letter": False,
+        "/api/applicant/match-jobs": False,
+    }
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None)
+        if path in want and methods and "POST" in methods:
+            want[path] = True
+    return want
 
 
 def _get_or_create_profile(db: Session) -> ApplicantProfile:
@@ -83,13 +109,87 @@ def _get_or_create_profile(db: Session) -> ApplicantProfile:
 
 
 @router.get("/health")
-def health():
-    return {"status": "ok"}
+def health(request: Request):
+    posts = _registered_post_paths(request.app)
+    out: dict = {"status": "ok", "routes_post": posts}
+    if not posts.get("/api/applicant/job-cover-letter"):
+        out["hint_ko"] = (
+            "이 uvicorn 프로세스에 POST /api/applicant/job-cover-letter 가 없습니다. "
+            "다른 터미널·다른 폴더에서 띄운 옛 백엔드가 포트를 잡고 있을 수 있습니다. "
+            "8000 LISTEN 프로세스를 모두 종료한 뒤, 이 저장소의 backend 폴더에서 "
+            "`python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload` 로 다시 실행하세요."
+        )
+    return out
 
 
-@router.get("/categories")
-def categories():
-    return [{"slug": k, "label": v} for k, v in CATEGORY_LABEL.items()]
+@router.get("/categories", response_model=list[CategoryItemOut])
+def categories(db: Session = Depends(get_db)):
+    """기본 직군 + 사용자 등록 직군 + DB에만 존재하는 category(과거 수집)."""
+    out: list[CategoryItemOut] = [
+        CategoryItemOut(slug=k, label=v, is_builtin=True)
+        for k, v in sorted(CATEGORY_LABEL.items(), key=lambda x: x[1])
+    ]
+    known = {c.slug for c in out}
+    customs = (
+        db.query(ConsultantCustomCategory).order_by(ConsultantCustomCategory.label_ko.asc()).all()
+    )
+    for row in customs:
+        meta = row.meta if isinstance(row.meta, dict) else {}
+        pk = [str(x) for x in (meta.get("primary_keywords") or []) if str(x).strip()]
+        sk = [str(x) for x in (meta.get("similar_keywords") or []) if str(x).strip()]
+        out.append(
+            CategoryItemOut(
+                slug=row.slug,
+                label=row.label_ko,
+                is_builtin=False,
+                id=row.id,
+                primary_keywords=pk,
+                similar_keywords=sk,
+            )
+        )
+        known.add(row.slug)
+    for cat, n in (
+        db.query(Job.category, func.count(Job.id)).group_by(Job.category).all()
+    ):
+        if not cat or cat in known:
+            continue
+        out.append(
+            CategoryItemOut(
+                slug=cat,
+                label=f"{cat} (공고 {n}건)",
+                is_builtin=False,
+                orphan_job_bucket=True,
+            )
+        )
+        known.add(cat)
+    return out
+
+
+@router.post("/applicant/analysis-categories", response_model=CategoryItemOut)
+def post_applicant_analysis_category(body: AnalysisCategoryCreate, db: Session = Depends(get_db)):
+    """분석 직군 추가: 라벨·검색 키워드를 저장하고 유사 검색어를 자동 부여합니다."""
+    label = body.label.strip()
+    primary = parse_keyword_line(body.keywords)
+    if label not in primary:
+        primary.insert(0, label)
+    similar = expand_similar_keywords(primary, label)
+    slug = auto_slug_for_label(db, label)
+    row = ConsultantCustomCategory(
+        slug=slug,
+        label_ko=label,
+        meta={"primary_keywords": primary, "similar_keywords": similar},
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return CategoryItemOut(
+        slug=row.slug,
+        label=row.label_ko,
+        is_builtin=False,
+        id=row.id,
+        primary_keywords=primary,
+        similar_keywords=similar,
+    )
 
 
 @router.get("/overview", response_model=OverviewOut)
@@ -278,6 +378,26 @@ def post_applicant_match_jobs(body: MatchJobsRequest, db: Session = Depends(get_
         limit=body.limit,
     )
     return MatchJobsResponse.model_validate(raw)
+
+
+@router.post("/applicant/job-cover-letter", response_model=JobCoverLetterOut)
+def post_applicant_job_cover_letter(body: JobCoverLetterRequest, db: Session = Depends(get_db)):
+    """맞춤 공고 옆 버튼 전용. 이력서·경력만 근거로 해당 공고 맞춤 자기소개서(약 1000자) LLM 생성."""
+    p = _get_or_create_profile(db)
+    resume = _body_field_or_profile(body.resume_text, p.resume_text)
+    summary = _body_field_or_profile(body.career_summary, p.career_summary)
+    if not (resume or "").strip() and not (summary or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="이력서 또는 경력 요약이 필요합니다. 입력란에 적거나 프로필에 저장하세요.",
+        )
+    job = db.query(Job).filter(Job.id == body.job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다.")
+    resume_use = (resume or "")[:MAX_RESUME_TEXT_IN_JSON]
+    summary_use = (summary or "")[: min(80_000, MAX_RESUME_TEXT_IN_JSON)]
+    raw = generate_job_cover_letter(job, resume_use, summary_use)
+    return JobCoverLetterOut.model_validate(raw)
 
 
 @router.get("/applicant/preparation", response_model=PreparationInsightOut)
@@ -566,7 +686,13 @@ def scraper_logs(limit: int = 20, db: Session = Depends(get_db)):
 
 @router.post("/admin/recompute")
 def admin_recompute(category: str | None = None, db: Session = Depends(get_db)):
-    cats = [category] if category else list(CATEGORY_LABEL.keys())
+    if category:
+        cats = [category]
+    else:
+        cats = list(CATEGORY_LABEL.keys()) + [
+            r.slug for r in db.query(ConsultantCustomCategory.slug).all()
+        ]
+        cats = list(dict.fromkeys(cats))
     for c in cats:
         refresh_demand_supply_summary(db, c)
     return {"ok": True, "categories": cats}
@@ -620,13 +746,18 @@ def collect_sources_health():
 
 @router.post("/collect", response_model=CollectResult)
 def collect_jobs(body: CollectRequest, db: Session = Depends(get_db)):
-    if body.category not in CATEGORY_LABEL:
-        raise HTTPException(400, f"알 수 없는 category: {body.category}")
+    allowed = collect_category_slugs(db)
+    if body.category not in allowed:
+        raise HTTPException(
+            400,
+            f"알 수 없는 category: {body.category}. 직군을 추가하거나 기존 슬러그를 선택하세요.",
+        )
     if not body.sources:
         raise HTTPException(400, "sources가 비었습니다.")
+    merged_kw = merge_collect_keywords(db, body.category, list(body.keywords))
     result = collect_by_keywords(
         db,
-        keywords=body.keywords,
+        keywords=merged_kw,
         category=body.category,
         sources=body.sources,
         max_pages=body.max_pages,
@@ -641,10 +772,15 @@ def collect_jobs(body: CollectRequest, db: Session = Depends(get_db)):
 @router.post("/collect/stream")
 async def collect_jobs_stream(request: Request, body: CollectRequest, db: Session = Depends(get_db)):
     """NDJSON 스트림으로 진행 이벤트를 보냅니다. 클라이언트가 연결을 끊으면 취소로 간주합니다."""
-    if body.category not in CATEGORY_LABEL:
-        raise HTTPException(400, f"알 수 없는 category: {body.category}")
+    allowed = collect_category_slugs(db)
+    if body.category not in allowed:
+        raise HTTPException(
+            400,
+            f"알 수 없는 category: {body.category}. 직군을 추가하거나 기존 슬러그를 선택하세요.",
+        )
     if not body.sources:
         raise HTTPException(400, "sources가 비었습니다.")
+    merged_kw = merge_collect_keywords(db, body.category, list(body.keywords))
 
     sync_q: queue.Queue[dict | None] = queue.Queue(maxsize=128)
     cancel_evt = threading.Event()
@@ -670,7 +806,7 @@ async def collect_jobs_stream(request: Request, body: CollectRequest, db: Sessio
             try:
                 for ev in generate_collect_events(
                     db_worker,
-                    keywords=body.keywords,
+                    keywords=merged_kw,
                     category=body.category,
                     sources=body.sources,
                     max_pages=body.max_pages,

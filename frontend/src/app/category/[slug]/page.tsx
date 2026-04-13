@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
+  getCategories,
   getGap,
   getSkillStats,
   getTrendSeries,
@@ -10,12 +11,6 @@ import { TrendLine } from "@/components/charts/TrendLine";
 import { DemandInterestCompare } from "@/components/charts/DemandInterestCompare";
 import { GapCards } from "@/components/GapCards";
 
-const LABELS: Record<string, string> = {
-  data_analyst: "데이터 분석가",
-  ai_engineer: "AI 엔지니어",
-  backend_developer: "백엔드 개발자",
-};
-
 const DEFAULT_TREND_KW = ["Python", "SQL", "머신러닝", "Docker", "생성형 AI"];
 
 export default async function CategoryPage({
@@ -24,7 +19,10 @@ export default async function CategoryPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  if (!LABELS[slug]) notFound();
+  const cats = await getCategories().catch(() => []);
+  const meta = cats.find((c) => c.slug === slug);
+  if (!meta) notFound();
+  const pageTitle = meta.label;
 
   const [gap, skills, trendSeries, recAcademy, recJob] = await Promise.all([
     getGap(slug),
@@ -40,7 +38,7 @@ export default async function CategoryPage({
         <Link href="/" className="text-sm text-sky-400 hover:underline">
           ← 대시보드
         </Link>
-        <h1 className="mt-2 text-2xl font-bold text-white">{LABELS[slug]}</h1>
+        <h1 className="mt-2 text-2xl font-bold text-white">{pageTitle}</h1>
         <p className="mt-1 text-slate-400">
           채용 공고 기반 수요 점수와 검색 트렌드 관심도를 비교합니다.
         </p>

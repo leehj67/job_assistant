@@ -12,7 +12,7 @@ export function AppNav() {
     <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
         <Link href="/" className="text-lg font-semibold tracking-tight text-white">
-          Find My Job <span className="text-sky-400">Insight</span>
+          일햇음청년 <span className="text-sky-400">제조기</span>
         </Link>
         <nav className="flex flex-wrap gap-3 text-sm">
           {links.map((l) => (

@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Find My Job Insight — Windows 초기 환경 자동 구성 (Python 백엔드, OCR, 프론트, Ollama 선택).
+  일햇음청년 제조기 — Windows 초기 환경 자동 구성 (Python 백엔드, OCR, 프론트, Ollama 선택).
 
 .PARAMETER SkipOllama
   Ollama 설치/모델 pull 생략
@@ -40,7 +40,7 @@ function Resolve-PythonExe {
     return $null
 }
 
-Write-Host "=== Find My Job Insight — 로컬 설치 ===" -ForegroundColor Cyan
+Write-Host "=== 일햇음청년 제조기 — 로컬 설치 ===" -ForegroundColor Cyan
 Write-Host "저장소: $RepoRoot"
 
 $pythonExe = Resolve-PythonExe

@@ -2,8 +2,8 @@
 
 import type { CategoryFit, CollectSuggestions } from "./api";
 
-export const COLLECT_APPLY_EVENT = "find-my-job:apply-collect";
-const STORAGE_KEY = "find_my_job_collect_v1";
+export const COLLECT_APPLY_EVENT = "ilhaeseum-youth-maker:apply-collect";
+const STORAGE_KEY = "ilhaeseum_youth_maker_collect_v1";
 
 export type StoredCollectPrefs = {
   keywordsLine: string;

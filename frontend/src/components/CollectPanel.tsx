@@ -1,13 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   COLLECT_STREAM_IDLE_MS,
+  getCategories,
   getCollectSourcesHealth,
   getCollectSuggestions,
   getLlmStatus,
+  postApplicantAnalysisCategory,
   postCollectStream,
+  type CategoryItem,
   type CollectResult,
   type CollectSourcesHealth,
 } from "@/lib/api";
@@ -19,15 +22,9 @@ import {
   type StoredCollectPrefs,
 } from "@/lib/collectApply";
 
-const CATS = [
-  { slug: "data_analyst", label: "데이터 분석가" },
-  { slug: "ai_engineer", label: "AI 엔지니어" },
-  { slug: "backend_developer", label: "백엔드 개발자" },
-];
-
-const VALID_CATEGORY = new Set(["data_analyst", "ai_engineer", "backend_developer"]);
-
 export function CollectPanel() {
+  const [cats, setCats] = useState<CategoryItem[]>([]);
+  const catSlugs = useMemo(() => new Set(cats.map((c) => c.slug)), [cats]);
   const [kw, setKw] = useState("Python, SQL");
   const [category, setCategory] = useState("data_analyst");
   const [saramin, setSaramin] = useState(true);
@@ -49,12 +46,30 @@ export function CollectPanel() {
   const collectAbortRef = useRef<AbortController | null>(null);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelKindRef = useRef<"user" | "idle" | null>(null);
+  const [newRoleLabel, setNewRoleLabel] = useState("");
+  const [newRoleKeywords, setNewRoleKeywords] = useState("");
+  const [addingRole, setAddingRole] = useState(false);
 
-  const applyCollectPrefs = useCallback((p: StoredCollectPrefs) => {
-    setKw(p.keywordsLine);
-    if (VALID_CATEGORY.has(p.category)) setCategory(p.category);
-    setCollectPrefs(p);
+  const applyCollectPrefs = useCallback(
+    (p: StoredCollectPrefs) => {
+      setKw(p.keywordsLine);
+      setCategory((prev) => (catSlugs.has(p.category) ? p.category : prev));
+      setCollectPrefs(p);
+    },
+    [catSlugs]
+  );
+
+  useEffect(() => {
+    getCategories()
+      .then(setCats)
+      .catch(() => setCats([]));
   }, []);
+
+  useEffect(() => {
+    if (cats.length > 0 && !catSlugs.has(category)) {
+      setCategory(cats[0].slug);
+    }
+  }, [cats, catSlugs, category]);
 
   useEffect(() => {
     getLlmStatus().then(setLlm).catch(() => setLlm(null));
@@ -243,14 +258,77 @@ export function CollectPanel() {
     }
   }
 
+  async function onAddRole(e: React.FormEvent) {
+    e.preventDefault();
+    const label = newRoleLabel.trim();
+    if (!label) {
+      setErr("직군 이름을 입력하세요.");
+      return;
+    }
+    setAddingRole(true);
+    setErr(null);
+    try {
+      const row = await postApplicantAnalysisCategory({
+        label,
+        keywords: newRoleKeywords,
+      });
+      const next = await getCategories();
+      setCats(next);
+      setCategory(row.slug);
+      setNewRoleLabel("");
+      setNewRoleKeywords("");
+    } catch (x) {
+      setErr(x instanceof Error ? x.message : "직군 추가 실패");
+    } finally {
+      setAddingRole(false);
+    }
+  }
+
+  const selectedCat = cats.find((c) => c.slug === category);
+
   return (
     <section id="collect-panel" className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
       <h2 className="text-lg font-semibold text-white">키워드로 채용 공고 수집</h2>
       <p className="mt-1 text-sm text-slate-400">
         사람인·잡코리아 검색 결과(목록)를 가져와 DB에 저장한 뒤 스킬·격차 분석을 갱신합니다. 동일
-        공고는 소스+공고ID로 중복 제외됩니다. 이력서/PDF 분석 후에는 아래 추천 키워드·직군이 자동으로
-        채워질 수 있습니다.
+        공고는 소스+공고ID로 중복 제외됩니다. 기본 직군 외에도 아래에서 직군을 추가하면 해당 슬러그로
+        공고가 저장되고, 수집 시 등록 키워드·유사어가 검색어에 자동으로 합쳐집니다.
       </p>
+
+      <div className="mt-4 rounded-lg border border-violet-900/40 bg-violet-950/15 p-3">
+        <p className="text-xs font-medium text-violet-200/90">분석 직군 추가</p>
+        <p className="mt-1 text-xs text-slate-500">
+          직군 이름과(선택) 검색 키워드를 넣으면 유사 검색어가 붙습니다. 공고가 아직 없을 때는 같은
+          키워드로 제목·검색어에 걸린 다른 직군 공고도 함께 보여 줍니다.
+        </p>
+        <form onSubmit={onAddRole} className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end">
+          <div className="min-w-0 flex-1">
+            <label className="text-[11px] text-slate-500">직군 이름</label>
+            <input
+              className="mt-0.5 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200"
+              value={newRoleLabel}
+              onChange={(e) => setNewRoleLabel(e.target.value)}
+              placeholder="예: 프론트엔드"
+            />
+          </div>
+          <div className="min-w-0 flex-[1.3]">
+            <label className="text-[11px] text-slate-500">검색 키워드 (쉼표)</label>
+            <input
+              className="mt-0.5 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200"
+              value={newRoleKeywords}
+              onChange={(e) => setNewRoleKeywords(e.target.value)}
+              placeholder="예: React, 웹개발"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={addingRole}
+            className="shrink-0 rounded-lg border border-violet-600 bg-violet-900/40 px-3 py-2 text-xs text-violet-100 hover:bg-violet-800/40 disabled:opacity-50"
+          >
+            {addingRole ? "추가 중…" : "직군 등록"}
+          </button>
+        </form>
+      </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
         <button
@@ -267,8 +345,8 @@ export function CollectPanel() {
         <div className="mt-3 rounded-lg border border-emerald-800/50 bg-emerald-950/15 p-3 text-sm">
           <p className="font-medium text-emerald-100/90">분석 기반 수집 설정</p>
           <p className="mt-1 text-xs text-slate-400">
-            선택된 분석 직군 가산과 기술 스택·경력 연차를 반영한 검색어입니다. 실제 저장 직군은 3가지
-            중 하나입니다.
+            선택된 분석 직군 가산과 기술 스택·경력 연차를 반영한 검색어입니다. 저장 직군은 기본 3종
+            가산에 가깝지만, 사용자 등록 직군을 고르면 해당 키워드가 수집에 반영됩니다.
           </p>
           <ol className="mt-2 space-y-1 text-xs text-slate-300">
             {collectPrefs.ranked.map((r, i) => (
@@ -386,12 +464,25 @@ export function CollectPanel() {
               value={category}
               onChange={(e) => setCategory(e.target.value)}
             >
-              {CATS.map((c) => (
+              {(cats.length ? cats : [{ slug: "data_analyst", label: "데이터 분석가" }]).map((c) => (
                 <option key={c.slug} value={c.slug}>
                   {c.label}
+                  {c.orphan_job_bucket ? " · 공고만" : ""}
                 </option>
               ))}
             </select>
+            {selectedCat &&
+              (selectedCat.primary_keywords?.length || selectedCat.similar_keywords?.length) ? (
+              <p className="mt-1 text-[11px] text-slate-500">
+                등록 키워드: {(selectedCat.primary_keywords ?? []).join(", ") || "—"}
+                {(selectedCat.similar_keywords ?? []).length > 0 && (
+                  <>
+                    {" "}
+                    · 유사: {(selectedCat.similar_keywords ?? []).slice(0, 8).join(", ")}
+                  </>
+                )}
+              </p>
+            ) : null}
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500">키워드당 페이지 (각 사이트)</label>
