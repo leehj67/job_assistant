@@ -10,6 +10,46 @@
 
 본 서비스는 수요와 관심을 같은 축에서 비교해 **과포화 / 기회 / 안정 인기 / 비추천** 영역으로 나누고, 그에 맞는 교육·학습 전략 문장을 제공한다.
 
+## 빠른 시작 (자동 설치)
+
+처음 클론한 PC에서 Python·pip 패키지·(선택) OCR·NLTK·프론트 npm·(선택) Ollama와 기본 Llama 모델까지 한 번에 맞출 수 있습니다.
+
+**Windows (PowerShell, 저장소 루트에서):**
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force   # 스크립트 실행이 막혀 있을 때만
+.\scripts\setup.ps1
+```
+
+옵션: `-SkipOllama` (Ollama winget/pull 생략), `-SkipOcr` (EasyOCR 등 대용량 OCR 패키지 생략), `-SkipFrontend` (npm 생략).
+
+**macOS / Linux:**
+
+```bash
+chmod +x scripts/setup.sh   # 최초 1회
+./scripts/setup.sh
+```
+
+옵션: `--skip-ollama`, `--skip-ocr`, `--skip-frontend`.
+
+설치 후에는 아래 **실행 방법**대로 백엔드·프론트를 각각 터미널에서 띄우면 됩니다. Ollama를 쓰는 경우 Windows에서는 트레이의 Ollama 앱이 떠 있어야 하며, `backend/.env`의 `OLLAMA_MODEL`은 `ollama list`에 나온 이름과 **정확히** 같아야 합니다(스크립트 기본 pull: `llama3:latest`).
+
+## 프로그램이 동작하는 방식
+
+1. **백엔드 (FastAPI, 기본 `127.0.0.1:8000`)** 가 SQLite에 채용 공고·트렌드·메타데이터를 저장하고, 수집·분석·추천 API를 제공합니다.
+2. **프론트 (Next.js)** 는 브라우저에서 `/api/...` 로만 호출하고, `frontend/src/app/api/[...path]/route.ts`의 프록시가 동일 요청을 백엔드로 넘깁니다. 따라서 CORS 없이 로컬 개발이 가능합니다.
+3. **AI 추천 문장** 은 `OPENAI_API_KEY`가 있으면 OpenAI를 쓰고, 없으면 Ollama(OpenAI 호환 `/v1`)로 로컬 Llama를 호출합니다. 둘 다 실패하면 규칙 기반 문장으로 폴백합니다 (`backend/app/services/llm_client.py`).
+4. **OCR** 은 수집 시 상세+이미지 옵션을 켠 경우에만 EasyOCR로 이미지에서 텍스트를 붙입니다. 패키지가 없으면 해당 기능만 조용히 빠집니다 (`backend/app/services/ocr_service.py`).
+5. **수집** 은 사람인·잡코리아 검색 HTML을 파싱해 DB에 적재합니다. 사이트 구조 변경 시 스크래퍼 수정이 필요할 수 있습니다.
+
+**주요 URL (로컬):**
+
+| 구분 | 주소 |
+|------|------|
+| 웹 UI | `http://localhost:3000` (또는 터미널에 표시된 포트) |
+| API 문서 | http://127.0.0.1:8000/docs |
+| LLM 상태 확인 | `GET http://127.0.0.1:8000/api/llm/status` |
+
 ## 서비스 대상
 
 | 구분 | 대상 |
@@ -44,7 +84,7 @@
 |------|------|
 | 프론트엔드 | Next.js 15 (App Router), TypeScript, Tailwind CSS, Recharts |
 | 백엔드 | FastAPI, SQLAlchemy, SQLite (MVP), httpx, BeautifulSoup |
-| AI (선택) | OpenAI API 또는 Ollama 호환 엔드포인트 (`llama3.2` 등) |
+| AI (선택) | OpenAI API 또는 Ollama 호환 엔드포인트 (`llama3:latest` 등) |
 
 ## 실행 방법
 
@@ -60,7 +100,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 - 최초 실행 시 SQLite DB가 생성되고, `SEED_DEMO_ON_EMPTY=true`(기본)이면 **데모 트렌드·샘플 공고**가 적재된다. 실데이터만 쓰려면 `.env`에 `SEED_DEMO_ON_EMPTY=false` 후 빈 DB로 시작한다.
-- 로컬 Llama: [Ollama](https://ollama.com/) 설치 후 `ollama pull llama3.2` · `ollama serve` (기본 11434 포트).
+- 로컬 Llama: [Ollama](https://ollama.com/) 설치 후 `ollama pull llama3:latest` (또는 `ollama list`에 맞는 태그) · Ollama 앱/서비스 실행(기본 11434). `OLLAMA_MODEL`은 pull한 이름과 일치해야 합니다.
 - API 문서: http://127.0.0.1:8000/docs  
 - 수집 API 예시: `POST /api/collect` — body에 `keywords`, `category`, `sources`, `max_pages`
 
@@ -74,7 +114,7 @@ npm run dev
 ```
 
 - 브라우저: `npm run dev` 실행 후 터미널에 나온 주소를 쓰면 됩니다. (보통 `http://localhost:3000`, 3000이 점유 중이면 `http://localhost:3001` 등으로 자동 변경)  
-- **프록시:** `frontend/src/app/api/[[...path]]/route.ts`가 `/api/*` 요청을 백엔드(`BACKEND_URL` 또는 `NEXT_PUBLIC_API_URL`, 기본 `http://127.0.0.1:8000`)로 넘깁니다. 브라우저는 동일 출처 `/api/...`만 호출하면 됩니다.  
+- **프록시:** `frontend/src/app/api/[...path]/route.ts`가 `/api/*` 요청을 백엔드(`BACKEND_URL` 또는 `NEXT_PUBLIC_API_URL`, 기본 `http://127.0.0.1:8000`)로 넘깁니다. 브라우저는 동일 출처 `/api/...`만 호출하면 됩니다.  
 - **환경 변수:** `NEXT_PUBLIC_API_URL`에 `.../api` 까지 넣지 마세요. 끝에 `/api`가 붙어 있으면 `/api/api/...` 로 가서 FastAPI가 `{"detail":"Not Found"}` 를 반환할 수 있습니다. (코드에서 자동 제거 처리함)
 
 ## 환경 변수
