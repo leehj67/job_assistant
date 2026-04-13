@@ -1,4 +1,25 @@
-# Find My Job Insight
+# 일햇음청년 제조기
+
+> **「쉬었음 청년 수십만의 시대.」**  
+> 공부는 죽어라 하는데,  
+> 기업이 뭘 원하는지는 아무도 모른다.
+>
+> 학원은 가르치고,  
+> 기업은 뽑고,  
+> 그 사이에서 사람은 길을 잃는다.
+>
+> 이에 AI를 갈아 넣어  
+> 현실과 데이터를 기준으로  
+> **「어디까지 되는지」** · **「뭘 해야 되는지」**  
+> 자동으로 계산하게 만들었으니,
+>
+> 더는 감으로 준비하지 말고  
+> **계산하고 준비하라.**
+>
+> 부디 이 도구가  
+> 한 명이라도 **「일했음」**으로 바꾸길 바란다.
+
+---
 
 채용 시장 **수요**(공고 기반 요구 역량)와 **관심**(검색·트렌드 지표)을 비교해, 교육기관과 취업준비생에게 **무엇을 가르치고 무엇을 공부할지** 방향을 제시하는 웹 서비스 MVP입니다.
 
@@ -10,29 +31,66 @@
 
 본 서비스는 수요와 관심을 같은 축에서 비교해 **과포화 / 기회 / 안정 인기 / 비추천** 영역으로 나누고, 그에 맞는 교육·학습 전략 문장을 제공한다.
 
-## 빠른 시작 (자동 설치)
+## 원클릭 설치·실행 (권장)
 
-처음 클론한 PC에서 Python·pip 패키지·(선택) OCR·NLTK·프론트 npm·(선택) Ollama와 기본 Llama 모델까지 한 번에 맞출 수 있습니다.
+처음 쓰는 PC에서 **의존성 설치**와 **백엔드·프론트 기동**까지 한 번에 진행합니다. (기존에 `8000`·`3000` 포트를 쓰는 프로세스는 종료를 시도합니다.)
 
-**Windows (PowerShell, 저장소 루트에서):**
+### Windows
+
+1. **탐색기에서** 저장소 루트의 **`run.bat`** 을 더블클릭하거나,  
+2. **PowerShell**에서 저장소 루트로 이동한 뒤:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force   # 스크립트가 막힐 때만
+.\run.bat
+# 또는
+.\scripts\run-local.ps1
+```
+
+- 동작: `scripts\setup.ps1` 로 Python 가상환경·pip·NLTK·(기본) OCR·프론트 `npm install`·(기본) Ollama 등을 맞춘 뒤, **새 PowerShell 창 2개**에서 백엔드(uvicorn)와 프론트(`npm run dev`)를 띄웁니다. 각 창에서 **Ctrl+C** 로 종료할 수 있습니다.
+- **시간을 줄이려면** (Ollama·무거운 OCR 생략):  
+  `.\scripts\run-local.ps1 -SkipOllama -SkipOcr`
+- **이미 설치만 해 둔 경우** (setup 생략):  
+  `.\scripts\run-local.ps1 -SkipSetup`
+- **자동 스모크 테스트만** (설치 생략 시 헬스·프론트 200 확인 후 프로세스 종료):  
+  `.\scripts\run-local.ps1 -SkipSetup -SameWindow`
+
+### macOS / Linux
+
+```bash
+chmod +x scripts/install-and-run.sh scripts/setup.sh   # 최초 1회
+./scripts/install-and-run.sh
+```
+
+옵션은 `setup.sh`와 동일하게 전달됩니다 (`--skip-ollama`, `--skip-ocr`, `--skip-frontend`). 이미 설치했다면 `./scripts/install-and-run.sh --skip-setup` 입니다. 종료는 터미널에서 **Ctrl+C** 한 번으로 백그라운드 작업을 정리합니다.
+
+**실행 후 주소:** 웹 UI `http://localhost:3000` · API 문서 `http://127.0.0.1:8000/docs`  
+Ollama를 쓰는 경우 Windows에서는 트레이의 Ollama 앱이 떠 있어야 하며, `backend/.env`의 `OLLAMA_MODEL`은 `ollama list`에 나온 이름과 **정확히** 같아야 합니다(스크립트 기본 pull: `llama3:latest`).
+
+**참고:** `scripts\setup.ps1` 안에 한글 안내가 있으면, Windows **PowerShell 5.1**에서 스크립트가 깨져 보이면 `UTF-8 BOM`으로 저장하거나 **PowerShell 7(`pwsh`)**으로 실행해 보세요. `scripts\run-local.ps1` 본문은 5.1 호환을 위해 ASCII 위주입니다. 백엔드 의존성은 **Python 3.11~3.12** 권장(3.14 등 최신 단일 버전에서는 일부 휠이 없을 수 있음).
+
+## 빠른 시작 (설치만)
+
+의존성만 맞추고 서버는 **직접** 띄우고 싶을 때 `setup` 만 실행합니다.
+
+**Windows (PowerShell, 저장소 루트):**
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force   # 스크립트 실행이 막혀 있을 때만
 .\scripts\setup.ps1
 ```
 
-옵션: `-SkipOllama` (Ollama winget/pull 생략), `-SkipOcr` (EasyOCR 등 대용량 OCR 패키지 생략), `-SkipFrontend` (npm 생략).
+옵션: `-SkipOllama`, `-SkipOcr`, `-SkipFrontend`.
 
 **macOS / Linux:**
 
 ```bash
-chmod +x scripts/setup.sh   # 최초 1회
 ./scripts/setup.sh
 ```
 
 옵션: `--skip-ollama`, `--skip-ocr`, `--skip-frontend`.
 
-설치 후에는 아래 **실행 방법**대로 백엔드·프론트를 각각 터미널에서 띄우면 됩니다. Ollama를 쓰는 경우 Windows에서는 트레이의 Ollama 앱이 떠 있어야 하며, `backend/.env`의 `OLLAMA_MODEL`은 `ollama list`에 나온 이름과 **정확히** 같아야 합니다(스크립트 기본 pull: `llama3:latest`).
+설치 후 수동 실행은 아래 **실행 방법 (수동)** 을 따르세요.
 
 ## 프로그램이 동작하는 방식
 
@@ -86,7 +144,9 @@ chmod +x scripts/setup.sh   # 최초 1회
 | 백엔드 | FastAPI, SQLAlchemy, SQLite (MVP), httpx, BeautifulSoup |
 | AI (선택) | OpenAI API 또는 Ollama 호환 엔드포인트 (`llama3:latest` 등) |
 
-## 실행 방법
+## 실행 방법 (수동)
+
+`run.bat` / `run-local.ps1` / `install-and-run.sh` 를 쓰지 않고 터미널을 나눠 띄울 때입니다.
 
 ### 1. 백엔드
 
