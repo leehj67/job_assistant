@@ -7,6 +7,18 @@ from app.services.llm_client import chat_completion
 from app.services.posting_metadata import merged_job_metadata, rag_document_text
 
 
+def _looks_korean_text(text: str) -> bool:
+    s = (text or "").strip()
+    if not s:
+        return False
+    letters = [ch for ch in s if ch.isalpha()]
+    if not letters:
+        return False
+    hangul = [ch for ch in letters if "가" <= ch <= "힣"]
+    # 알파벳성 문자의 과반이 한글이면 한국어 본문으로 간주.
+    return (len(hangul) / len(letters)) >= 0.5
+
+
 def _truncate(s: str, max_len: int) -> str:
     s = (s or "").strip()
     if len(s) <= max_len:
@@ -76,6 +88,13 @@ def generate_job_cover_letter(job: Job, resume_text: str, career_summary: str) -
     )
 
     text = chat_completion(system, user, temperature=0.42)
+    if text and not _looks_korean_text(text):
+        # 모델이 가끔 영문으로 응답할 수 있어, 한국어만 허용하는 지시로 1회 재시도.
+        text = chat_completion(
+            system + "\n- 출력 언어는 반드시 한국어만 사용한다. 영어 문장/단어 출력 금지.",
+            user,
+            temperature=0.3,
+        )
     if text and len(text.strip()) >= 80:
         out = text.strip()
         return {
