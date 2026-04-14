@@ -32,13 +32,48 @@ function Refresh-SessionPath {
     $env:Path = "$machine;$user"
 }
 
+function Test-IsWindowsStorePythonAlias([string]$path) {
+    if (-not $path) { return $false }
+    # 설정 > 앱 > 앱 실행 별칭 의 Store용 python.exe (실제 인터프리터 아님)
+    if ($path -match '\\Microsoft\\WindowsApps\\') { return $true }
+    if ($path -match '\\WindowsApps\\python(3)?\.exe$') { return $true }
+    return $false
+}
+
+function Add-RealPythonDirsToSessionPath {
+    $dirs = @(
+        (Join-Path $env:LocalAppData "Programs\Python\Python312"),
+        (Join-Path $env:LocalAppData "Programs\Python\Python311"),
+        (Join-Path $env:LocalAppData "Programs\Python\Python310"),
+        "C:\Python312",
+        "C:\Python311"
+    )
+    foreach ($d in $dirs) {
+        $py = Join-Path $d "python.exe"
+        if (-not (Test-Path -LiteralPath $py)) { continue }
+        $parts = @($env:Path -split ';' | Where-Object { $_ })
+        if ($parts -notcontains $d) { $env:Path = "$d;$env:Path" }
+        $scripts = Join-Path $d "Scripts"
+        if (Test-Path -LiteralPath $scripts) {
+            $parts2 = @($env:Path -split ';' | Where-Object { $_ })
+            if ($parts2 -notcontains $scripts) { $env:Path = "$scripts;$env:Path" }
+        }
+    }
+}
+
 function Resolve-PythonExe {
+    Add-RealPythonDirsToSessionPath
     if (Get-Command py -ErrorAction SilentlyContinue) {
         $out = & py -3 -c "import sys; print(sys.executable)" 2>$null
         if ($LASTEXITCODE -eq 0 -and $out) { return $out.Trim() }
     }
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        $out = & python -c "import sys; print(sys.executable)" 2>$null
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pyCmd) {
+        $src = $pyCmd.Source
+        if (Test-IsWindowsStorePythonAlias $src) {
+            return $null
+        }
+        $out = & $src -c "import sys; print(sys.executable)" 2>$null
         if ($LASTEXITCODE -eq 0 -and $out) { return $out.Trim() }
     }
     return $null
@@ -67,6 +102,8 @@ function Invoke-WingetPackageInstall([string]$PackageId) {
 Write-Host "=== 일햇음청년 제조기 — 로컬 설치 ===" -ForegroundColor Cyan
 Write-Host "저장소: $RepoRoot"
 
+Refresh-SessionPath
+Add-RealPythonDirsToSessionPath
 $pythonExe = Resolve-PythonExe
 if (-not $pythonExe -and -not $SkipPrereqInstall) {
     Write-Host "Python 3 가 PATH 에 없습니다. winget 으로 설치를 시도합니다..." -ForegroundColor Yellow
@@ -74,6 +111,7 @@ if (-not $pythonExe -and -not $SkipPrereqInstall) {
         if (-not (Test-WingetAvailable)) { break }
         Invoke-WingetPackageInstall $pkg | Out-Null
         Refresh-SessionPath
+        Add-RealPythonDirsToSessionPath
         Start-Sleep -Seconds 5
         $pythonExe = Resolve-PythonExe
         if ($pythonExe) { break }
@@ -84,6 +122,7 @@ if (-not $pythonExe) {
     Write-Host "Python 3 를 찾을 수 없습니다. 아래 중 하나를 진행한 뒤, 새 PowerShell 을 연 다음 다시 setup.ps1 을 실행하세요." -ForegroundColor Red
     Write-Host "  - https://www.python.org/downloads/  설치 시 'Add python.exe to PATH' 체크" -ForegroundColor Gray
     Write-Host "  - 또는 관리자 PowerShell: winget install -e --id Python.Python.3.12" -ForegroundColor Gray
+    Write-Host "  - Windows 설정 > 앱 > 고급 앱 설정 > 앱 실행 별칭 에서 python.exe 별칭 끄기 (Store 허위 python 방지)" -ForegroundColor Gray
     Write-Host "  - 자동 설치 시도를 끄려면: -SkipPrereqInstall" -ForegroundColor Gray
     throw "Python 3 가 필요합니다."
 }
