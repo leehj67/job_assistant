@@ -18,6 +18,7 @@ param(
     [switch]$SkipOllama,
     [switch]$SkipOcr,
     [switch]$SkipFrontend,
+    [switch]$SkipPrereqInstall,
     [switch]$SameWindow,
     [switch]$NoKillPorts
 )
@@ -50,6 +51,7 @@ if (-not $SkipSetup) {
     if ($SkipOllama) { $setupArgs += "-SkipOllama" }
     if ($SkipOcr) { $setupArgs += "-SkipOcr" }
     if ($SkipFrontend) { $setupArgs += "-SkipFrontend" }
+    if ($SkipPrereqInstall) { $setupArgs += "-SkipPrereqInstall" }
     Write-Host "Running: setup.ps1 $($setupArgs -join ' ')" -ForegroundColor Yellow
     & $setupPath @setupArgs
 } else {

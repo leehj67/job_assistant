@@ -11,11 +11,15 @@
 
 .PARAMETER SkipFrontend
   npm install 생략
+
+.PARAMETER SkipPrereqInstall
+  winget 으로 Python·Node 자동 설치 시도 생략(수동 설치만 안내)
 #>
 param(
     [switch]$SkipOllama,
     [switch]$SkipOcr,
-    [switch]$SkipFrontend
+    [switch]$SkipFrontend,
+    [switch]$SkipPrereqInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,12 +44,48 @@ function Resolve-PythonExe {
     return $null
 }
 
+function Test-WingetAvailable {
+    return [bool](Get-Command winget -ErrorAction SilentlyContinue)
+}
+
+function Invoke-WingetPackageInstall([string]$PackageId) {
+    if (-not (Test-WingetAvailable)) {
+        Write-Warning "winget 이 없습니다. Store 정책·회사 PC 제한일 수 있습니다."
+        return $false
+    }
+    Write-Host "winget install: $PackageId" -ForegroundColor Yellow
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    try {
+        & winget install -e --id $PackageId --accept-package-agreements --accept-source-agreements 2>&1 | Out-Host
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    return $true
+}
+
 Write-Host "=== 일햇음청년 제조기 — 로컬 설치 ===" -ForegroundColor Cyan
 Write-Host "저장소: $RepoRoot"
 
 $pythonExe = Resolve-PythonExe
+if (-not $pythonExe -and -not $SkipPrereqInstall) {
+    Write-Host "Python 3 가 PATH 에 없습니다. winget 으로 설치를 시도합니다..." -ForegroundColor Yellow
+    foreach ($pkg in @("Python.Python.3.12", "Python.Python.3.11")) {
+        if (-not (Test-WingetAvailable)) { break }
+        Invoke-WingetPackageInstall $pkg | Out-Null
+        Refresh-SessionPath
+        Start-Sleep -Seconds 5
+        $pythonExe = Resolve-PythonExe
+        if ($pythonExe) { break }
+    }
+}
 if (-not $pythonExe) {
-    throw "Python 3를 찾을 수 없습니다. https://www.python.org/downloads/ 에서 설치 후 'py launcher' 또는 PATH의 python을 켜 주세요."
+    Write-Host ""
+    Write-Host "Python 3 를 찾을 수 없습니다. 아래 중 하나를 진행한 뒤, 새 PowerShell 을 연 다음 다시 setup.ps1 을 실행하세요." -ForegroundColor Red
+    Write-Host "  - https://www.python.org/downloads/  설치 시 'Add python.exe to PATH' 체크" -ForegroundColor Gray
+    Write-Host "  - 또는 관리자 PowerShell: winget install -e --id Python.Python.3.12" -ForegroundColor Gray
+    Write-Host "  - 자동 설치 시도를 끄려면: -SkipPrereqInstall" -ForegroundColor Gray
+    throw "Python 3 가 필요합니다."
 }
 Write-Host "Python: $pythonExe"
 
@@ -131,6 +171,13 @@ if (-not $SkipOllama) {
 
 if (-not $SkipFrontend) {
     $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node -and -not $SkipPrereqInstall) {
+        Write-Host "Node.js 가 PATH 에 없습니다. winget 으로 LTS 설치를 시도합니다..." -ForegroundColor Yellow
+        Invoke-WingetPackageInstall "OpenJS.NodeJS.LTS" | Out-Null
+        Refresh-SessionPath
+        Start-Sleep -Seconds 5
+        $node = Get-Command node -ErrorAction SilentlyContinue
+    }
     if (-not $node) {
         Write-Warning "Node.js 없음 — https://nodejs.org/ LTS 설치 후 다시 실행하거나 -SkipFrontend 로 백엔드만 구성하세요."
     } else {
