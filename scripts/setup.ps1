@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   일햇음청년 제조기 — Windows 초기 환경 자동 구성 (Python 백엔드, OCR, 프론트, Ollama 선택).
@@ -70,14 +70,21 @@ if (-not $SkipOcr) {
 }
 
 Write-Host "NLTK 데이터 사전 내려받기 (RAKE 등)..." -ForegroundColor Yellow
-& $venvPy -c @"
-import nltk
-for pkg in ('punkt', 'punkt_tab', 'stopwords'):
-    try:
-        nltk.download(pkg, quiet=True)
-    except Exception as e:
-        print('nltk', pkg, e)
-"@
+# PS 5.1 + UTF-8 무BOM 저장소에서 python -c @" ... "@ 는 파서가 깨질 수 있어 임시 .py 로 실행
+$nltkPy = Join-Path $env:TEMP ("job-assistant-nltk-{0}.py" -f [guid]::NewGuid().ToString("N"))
+@(
+    'import nltk',
+    'for pkg in ("punkt", "punkt_tab", "stopwords"):',
+    '    try:',
+    '        nltk.download(pkg, quiet=True)',
+    '    except Exception as e:',
+    '        print("nltk", pkg, e)'
+) | Set-Content -LiteralPath $nltkPy -Encoding ASCII
+try {
+    & $venvPy $nltkPy
+} finally {
+    Remove-Item -LiteralPath $nltkPy -Force -ErrorAction SilentlyContinue
+}
 
 $envExample = Join-Path $backend ".env.example"
 $envFile = Join-Path $backend ".env"
