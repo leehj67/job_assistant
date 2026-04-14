@@ -70,7 +70,7 @@ chmod +x scripts/install-and-run.sh scripts/setup.sh   # 최초 1회
 **실행 후 주소:** 웹 UI `http://localhost:3000` · API 문서 `http://127.0.0.1:8000/docs`  
 Ollama를 쓰는 경우 Windows에서는 트레이의 Ollama 앱이 떠 있어야 하며, `backend/.env`의 `OLLAMA_MODEL`은 `ollama list`에 나온 이름과 **정확히** 같아야 합니다(스크립트 기본 pull: `llama3:latest`).
 
-**참고:** Windows **PowerShell 5.1**은 UTF-8 **무 BOM** `.ps1`을 잘못 읽어 파서 오류가 날 수 있습니다. 저장소의 `scripts\setup.ps1`은 **UTF-8 BOM**으로 두었고, NLTK 구간은 `python -c @"` 대신 **임시 `.py` 파일**로 실행해 ZIP 내려받기 PC에서도 깨지지 않게 했습니다. 그래도 문제면 **PowerShell 7(`pwsh`)**으로 실행해 보세요. `scripts\run-local.ps1` 본문은 5.1 호환을 위해 ASCII 위주입니다. 백엔드 의존성은 **Python 3.11~3.12** 권장(3.14 등 최신 단일 버전에서는 일부 휠이 없을 수 있음).
+**참고:** Windows **PowerShell 5.1**은 UTF-8 **무 BOM** `.ps1`을 잘못 읽어 파서 오류가 날 수 있습니다. 저장소의 `scripts\setup.ps1`은 **UTF-8 BOM**으로 두었고, NLTK 구간은 `python -c @"` 대신 **임시 `.py` 파일**로 실행해 ZIP 내려받기 PC에서도 깨지지 않게 했습니다. 그래도 문제면 **PowerShell 7(`pwsh`)**으로 실행해 보세요. `scripts\run-local.ps1` 본문은 5.1 호환을 위해 ASCII 위주입니다. 백엔드 의존성은 **Python 3.11~3.12** 권장(3.14 등 최신 단일 버전에서는 일부 휠이 없을 수 있음). **NLTK 데이터**(`punkt` 등)는 보통 수 초~1분이면 끝나며, 회사망·프록시·방화벽이면 더 걸리거나 멈춘 것처럼 보일 수 있어 `setup.ps1`에서 **다운로드 진행 로그**가 출력되도록 해 두었습니다.
 
 ## 아무 것도 안 깐 PC (Python·Node 없음)
 

@@ -149,15 +149,17 @@ if (-not $SkipOcr) {
 }
 
 Write-Host "NLTK 데이터 사전 내려받기 (RAKE 등)..." -ForegroundColor Yellow
+Write-Host "  (보통 수 초~1분. 회사망·방화벽·느린 인터넷이면 더 걸릴 수 있습니다. 아래에 패키지별 로그가 나옵니다.)" -ForegroundColor DarkGray
 # PS 5.1 + UTF-8 무BOM 저장소에서 python -c @" ... "@ 는 파서가 깨질 수 있어 임시 .py 로 실행
 $nltkPy = Join-Path $env:TEMP ("job-assistant-nltk-{0}.py" -f [guid]::NewGuid().ToString("N"))
 @(
     'import nltk',
     'for pkg in ("punkt", "punkt_tab", "stopwords"):',
+    '    print("NLTK downloading:", pkg, flush=True)',
     '    try:',
-    '        nltk.download(pkg, quiet=True)',
+    '        nltk.download(pkg, quiet=False)',
     '    except Exception as e:',
-    '        print("nltk", pkg, e)'
+    '        print("NLTK error:", pkg, e, flush=True)'
 ) | Set-Content -LiteralPath $nltkPy -Encoding ASCII
 try {
     & $venvPy $nltkPy
